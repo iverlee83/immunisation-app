@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Immunisation Arrangement Generator — St. Hilary's School</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+:root{
+  --ink:#1a1c1e; --muted:#5c6470; --line:#dfe3e8; --bg:#f6f7f9; --card:#fff;
+  --accent:#1f5f8b; --accent-soft:#e8f1f7; --warn:#b45309; --warn-soft:#fef6e7;
+  --ok:#166534; --ok-soft:#e8f5ec;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+  background:var(--bg);color:var(--ink);font-size:14px;line-height:1.5}
+header{background:var(--accent);color:#fff;padding:18px 28px}
+header h1{margin:0;font-size:19px;font-weight:600}
+header p{margin:4px 0 0;font-size:13px;opacity:.85}
+.wrap{max-width:1180px;margin:0 auto;padding:22px 28px 80px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin-bottom:18px}
+.card h2{margin:0 0 14px;font-size:15px;font-weight:600;display:flex;align-items:center;gap:8px}
+.step{background:var(--accent);color:#fff;width:22px;height:22px;border-radius:50%;
+  display:inline-flex;align-items:center;justify-content:center;font-size:12px;flex:none}
+.grid{display:grid;gap:14px}
+.g2{grid-template-columns:1fr 1fr}
+.g3{grid-template-columns:repeat(3,1fr)}
+.g4{grid-template-columns:repeat(4,1fr)}
+label.f{display:block;font-size:12px;font-weight:600;color:var(--muted);margin-bottom:5px}
+input[type=text],input[type=date],input[type=number],select,textarea{
+  width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;font-size:14px;
+  font-family:inherit;background:#fff;color:var(--ink)}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--accent-soft);border-color:var(--accent)}
+textarea{min-height:110px;resize:vertical}
+button{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:10px 18px;
+  font-size:14px;font-weight:600;cursor:pointer;font-family:inherit}
+button:hover{filter:brightness(1.08)}
+button.sec{background:#fff;color:var(--accent);border:1px solid var(--accent)}
+button:disabled{background:#c8ccd2;cursor:not-allowed;filter:none}
+.filebox{border:1.5px dashed var(--line);border-radius:8px;padding:14px;text-align:center;background:#fbfcfd}
+.filebox.ok{border-color:var(--ok);background:var(--ok-soft)}
+.filebox small{display:block;color:var(--muted);margin-top:4px;font-size:12px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+.chip{border:1px solid var(--line);border-radius:20px;padding:6px 13px;cursor:pointer;
+  background:#fff;font-size:13px;user-select:none}
+.chip.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.chip.dis{opacity:.4;cursor:not-allowed}
+table{width:100%;border-collapse:collapse;margin-top:6px}
+th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:middle;font-size:13px}
+th{background:var(--accent-soft);font-weight:600;font-size:12px}
+td select,td input{padding:5px 7px;font-size:13px}
+.note{background:var(--warn-soft);border-left:3px solid var(--warn);padding:9px 12px;
+  border-radius:0 6px 6px 0;font-size:13px;margin:8px 0}
+.okbox{background:var(--ok-soft);border-left:3px solid var(--ok);padding:9px 12px;
+  border-radius:0 6px 6px 0;font-size:13px;margin:8px 0}
+.hide{display:none}
+.muted{color:var(--muted);font-size:12px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.badge{font-size:11px;padding:2px 7px;border-radius:10px;background:var(--accent-soft);color:var(--accent)}
+.badge.w{background:var(--warn-soft);color:var(--warn)}
+.bell td,.bell th{padding:4px 6px;font-size:12px}
+.bell input{padding:3px 5px;font-size:12px;text-align:center}
+details summary{cursor:pointer;font-size:13px;color:var(--accent);font-weight:600}
+</style>
+</head>
+<body>
+<header>
+  <h1>Immunisation Arrangement Generator</h1>
+  <p>St. Hilary's School (Primary) &middot; builds the arrangement notice from the Overall Timetable and Teaching Roster</p>
+</header>
+
+<div class="wrap">
+
+<!-- 1. FILES -->
+<div class="card">
+  <h2><span class="step">1</span> Upload files</h2>
+  <div class="grid g2">
+    <div>
+      <label class="f">Campus Overall Timetable (.xlsx)</label>
+      <div class="filebox" id="box1">
+        <input type="file" id="fTT" accept=".xlsx,.xlsm">
+        <small>e.g. 2627 MK Overall Timetable.xlsx</small>
+      </div>
+    </div>
+    <div>
+      <label class="f">Teaching Roster (.xlsx)</label>
+      <div class="filebox" id="box2">
+        <input type="file" id="fRS" accept=".xlsx,.xlsm">
+        <small>e.g. 2627 Teaching Roster1.xlsx</small>
+      </div>
+    </div>
+  </div>
+  <div id="loadMsg"></div>
+</div>
+
+<!-- 2. SETTINGS -->
+<div class="card hide" id="cSet">
+  <h2><span class="step">2</span> Event details</h2>
+  <div class="grid g4">
+    <div><label class="f">Campus</label><select id="campus"></select></div>
+    <div><label class="f">Date</label><input type="date" id="date"></div>
+    <div><label class="f">Day (from date)</label><input type="text" id="dayShow" readonly></div>
+    <div><label class="f">Venue</label><input type="text" id="venue" value="Dancing Room"></div>
+  </div>
+  <div class="grid g4" style="margin-top:14px">
+    <div><label class="f">Start time of immunisation</label><input type="text" id="startT" value="10:20" placeholder="HH:MM"></div>
+    <div><label class="f">Number of stations</label><input type="number" id="stations" value="2" min="1" max="6"></div>
+    <div><label class="f">Finish each session early by (min)</label><input type="number" id="trim" value="5" min="0" max="15"></div>
+    <div><label class="f">Title</label><input type="text" id="title" placeholder="auto"></div>
+  </div>
+  <details style="margin-top:14px">
+    <summary>Lesson times (edit if the bell schedule changes)</summary>
+    <table class="bell" id="bellTbl"></table>
+  </details>
+</div>
+
+<!-- 3. CLASSES -->
+<div class="card hide" id="cCls">
+  <h2><span class="step">3</span> Grades &amp; classes</h2>
+  <label class="f">Grades</label>
+  <div class="chips" id="grades"></div>
+  <label class="f" style="margin-top:14px">Classes (untick any that are not joining)</label>
+  <div class="chips" id="classes"></div>
+  <div class="row" style="margin-top:18px">
+    <button id="btnGen">Generate arrangement</button>
+    <span class="muted" id="capacity"></span>
+  </div>
+</div>
+
+<!-- 4. RESULT -->
+<div class="card hide" id="cRes">
+  <h2><span class="step">4</span> Schedule <span class="muted" id="resMeta"></span></h2>
+  <div id="warnings"></div>
+  <table id="outTbl"></table>
+  <label class="f" style="margin-top:16px">Remarks</label>
+  <textarea id="remarks"></textarea>
+  <div class="row" style="margin-top:16px">
+    <button id="btnDoc">Download Word (.docx)</button>
+    <button class="sec" id="btnRe">Re-run assignment</button>
+    <span class="muted">Edits made in the table above are kept in the download.</span>
+  </div>
+</div>
+
+</div>
+
+<script>
+/* ============================ STATE ============================ */
+const S = {ttWb:null, rsWb:null, campus:null, campuses:[], byCampus:{}, roster:[], teachers:{},
+           day:null, sheet:null, parsed:null, rows:[]};
+
+const DAYS=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const SUBJ_COLS=['Chi','Eng','Maths','G.S.H.','Sci','Music','P.E.','V.A.'];
+
+/* default 26-27 bell schedule */
+let BELL=[
+ {key:'Reading', label:'Reading',  s:'08:35', e:'08:55'},
+ {key:1, label:'Lesson 1', s:'08:55', e:'09:30'},
+ {key:2, label:'Lesson 2', s:'09:30', e:'10:05'},
+ {key:3, label:'Lesson 3', s:'10:20', e:'10:55'},
+ {key:4, label:'Lesson 4', s:'10:55', e:'11:30'},
+ {key:5, label:'Lesson 5', s:'11:45', e:'12:20'},
+ {key:6, label:'Lesson 6', s:'12:20', e:'12:55'},
+ {key:7, label:'Lesson 7', s:'13:35', e:'14:15'},
+ {key:8, label:'Lesson 8', s:'14:15', e:'14:50'},
+ {key:9, label:'Lesson 9', s:'14:50', e:'15:25'}
+];
+
+const $=id=>document.getElementById(id);
+const txt=v=>(v===null||v===undefined)?'':String(v).replace(/\s+/g,' ').trim();
+const mins=t=>{const m=/^(\d{1,2})[:.](\d{2})$/.exec(t.trim()); return m?(+m[1]*60+ +m[2]):null;};
+const hhmm=m=>String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');
+
+/* ============================ FILE LOADING ============================ */
+function readWb(file,cb){
+  const r=new FileReader();
+  r.onload=e=>cb(XLSX.read(new Uint8Array(e.target.result),{type:'array'}));
+  r.readAsArrayBuffer(file);
+}
+$('fTT').onchange=e=>{ if(!e.target.files[0])return;
+  readWb(e.target.files[0],wb=>{S.ttWb=wb; $('box1').classList.add('ok'); afterLoad();}); };
+$('fRS').onchange=e=>{ if(!e.target.files[0])return;
+  readWb(e.target.files[0],wb=>{S.rsWb=wb; $('box2').classList.add('ok'); afterLoad();}); };
+
+function afterLoad(){
+  if(!S.ttWb||!S.rsWb) return;
+  try{
+    parseRoster();
+    detectCampuses();
+    buildBellTable();
+    $('cSet').classList.remove('hide');
+    $('cCls').classList.remove('hide');
+    const d=new Date(); d.setDate(d.getDate()+1);
+    $('date').value=d.toISOString().slice(0,10);
+    onCampus(); onDate();
+    $('loadMsg').innerHTML='<div class="okbox">Loaded: '+S.campuses.join(', ')+
+      ' timetable &middot; '+S.roster.length+' classes in the roster &middot; '+
+      Object.keys(S.teachers).length+' teacher names.</div>';
+  }catch(err){
+    $('loadMsg').innerHTML='<div class="note">Could not read the files: '+err.message+'</div>';
+  }
+}
+
+/* ============================ ROSTER ============================ */
+function parseRoster(){
+  const sh=S.rsWb.Sheets[S.rsWb.SheetNames[0]];
+  const aoa=XLSX.utils.sheet_to_json(sh,{header:1,defval:''});
+  let hdr=-1;
+  for(let i=0;i<aoa.length;i++){
+    const r=aoa[i].map(txt);
+    if(r.some(v=>/^campus$/i.test(v)) && r.some(v=>/^class$/i.test(v))){hdr=i;break;}
+  }
+  if(hdr<0) throw new Error('no Campus/Class header row in the roster');
+  const H=aoa[hdr].map(txt);
+  const iCam=H.findIndex(v=>/^campus$/i.test(v));
+  const iCls=H.findIndex(v=>/^class$/i.test(v));
+  const hrCols=[]; H.forEach((v,i)=>{ if(/^hr\.?$/i.test(v)) hrCols.push(i); });
+  const subCols={};
+  H.forEach((v,i)=>{ SUBJ_COLS.forEach(s=>{ if(v.toLowerCase().replace(/\s/g,'')===s.toLowerCase().replace(/\s/g,'')) subCols[s]=i; }); });
+  S.roster=[];
+  for(let i=hdr+1;i<aoa.length;i++){
+    const r=aoa[i].map(txt);
+    if(!r[iCls]||!r[iCam]) continue;
+    const subs={}; Object.keys(subCols).forEach(s=>{ const v=r[subCols[s]]; if(v) subs[s]=v; });
+    S.roster.push({campus:r[iCam].toUpperCase(), cls:r[iCls].toUpperCase(),
+                   hrts:hrCols.map(c=>r[c]).filter(Boolean), subs});
+  }
+}
+const rosterOf=cls=>S.roster.find(r=>r.cls===cls)||null;
+
+/* ============================ TIMETABLE ============================ */
+function detectCampuses(){
+  S.campuses=[]; S.byCampus={};
+  S.ttWb.SheetNames.forEach(n=>{
+    const m=/^([A-Za-z]{2,3})\s+(Monday|Tuesday|Wednesday|Thursday|Friday)$/i.exec(n.trim());
+    if(m){ const c=m[1].toUpperCase();
+      if(!S.byCampus[c]){S.byCampus[c]={}; S.campuses.push(c);}
+      S.byCampus[c][m[2].toLowerCase()]=n; }
+  });
+  if(!S.campuses.length) throw new Error('no "<Campus> <Day>" sheets found');
+  $('campus').innerHTML=S.campuses.map(c=>'<option>'+c+'</option>').join('');
+  // teacher code -> name
+  S.teachers={};
+  const tn=S.ttWb.SheetNames.find(n=>/^teachers?$/i.test(n.trim()));
+  if(tn){
+    XLSX.utils.sheet_to_json(S.ttWb.Sheets[tn],{header:1,defval:''}).forEach(r=>{
+      const a=txt(r[0]),b=txt(r[1]); if(a&&b) S.teachers[a]=b;
+    });
+  }
+}
+
+/* Parse one day sheet into {classes:{cls:{lesson:{subject,abbr}}}, grid:{code:{lesson:val}}} */
+function parseDay(sheetName){
+  const aoa=XLSX.utils.sheet_to_json(S.ttWb.Sheets[sheetName],{header:1,defval:'',blankrows:true});
+  const at=(r,c)=>txt((aoa[r]||[])[c]);
+  // lesson rows: col A label
+  const lrow={};
+  for(let r=0;r<aoa.length;r++){
+    const v=at(r,0);
+    if(/^reading$/i.test(v)) lrow['Reading']=r;
+    const m=/^lesson\s*(\d)$/i.exec(v); if(m) lrow[+m[1]]=r;
+  }
+  // header row: the row carrying 'Abreviation'/'Teachers'/'Class...lesson time' labels.
+  // (Some files repeat the class codes on a row above — always take the lowest one.)
+  let hr=-1;
+  for(let r=0;r<Math.min(aoa.length,10);r++){
+    const row=(aoa[r]||[]).map(txt);
+    const labelled = row.some(v=>/^abre?viation$/i.test(v)) || row.some(v=>/^patrolling duty$/i.test(v))
+                  || /class.*lesson\s*time/i.test(row[0]||'');
+    if(labelled && row.filter(v=>/^[1-6][A-Z]$/.test(v)).length>=3){hr=r;}
+  }
+  if(hr<0){                                   // fallback: last row (of the first 6) with class codes
+    for(let r=0;r<Math.min(aoa.length,6);r++){
+      const row=(aoa[r]||[]).map(txt);
+      if(row.filter(v=>/^[1-6][A-Z]$/.test(v)).length>=3) hr=r;
+    }
+  }
+  if(hr<0) throw new Error('cannot find the class header row in '+sheetName);
+  const trow=hr+1;                                   // teacher-grid codes sit one row below
+  const width=Math.max(...aoa.map(r=>r?r.length:0));
+  const classCols={}, grid={};
+  for(let c=0;c<width;c++){
+    const h=at(hr,c), t=at(trow,c);
+    if(/^[1-6][A-Z]$/.test(h) && !t && classCols[h]===undefined) classCols[h]=c;   // class block
+    if(t && /^[A-Z]{1,5}$/i.test(t) && grid[t]===undefined) grid[t]=c;             // teacher column
+  }
+  const classes={};
+  Object.keys(classCols).forEach(cls=>{
+    const c=classCols[cls]; classes[cls]={};
+    Object.keys(lrow).forEach(k=>{
+      const r=lrow[k];
+      let subject=at(r,c), abbr=at(r,c+1), name=at(r,c+2);
+      if(!abbr && /^[A-Z]{1,5}$/.test(subject)){abbr=subject; subject='';}
+      classes[cls][k]={subject, abbr, name};
+      if(abbr && name && !S.teachers[abbr]) S.teachers[abbr]=name;
+    });
+  });
+  const busy={};
+  Object.keys(grid).forEach(code=>{
+    const c=grid[code]; busy[code]={};
+    Object.keys(lrow).forEach(k=>{ busy[code][k]=at(lrow[k],c); });
+  });
+  // CP block fallback (older format: 'CP' headers with abbreviations listed per lesson row)
+  const cpCols=[];
+  for(let r=0;r<Math.min(aoa.length,6);r++)
+    for(let c=0;c<width;c++) if(at(r,c)==='CP' && at(hr,c)==='' ) cpCols.push(c);
+  if(cpCols.length){
+    Object.keys(lrow).forEach(k=>{
+      cpCols.forEach(c=>{ const v=at(lrow[k],c);
+        if(v){ if(!busy[v]) busy[v]={}; busy[v][k]=busy[v][k]||'CP'; } });
+    });
+  }
+  return {classes, busy, lessons:Object.keys(lrow)};
+}
+
+/* teachers that belong to this campus: in the campus roster, or teaching in this day sheet */
+function campusTeachers(P){
+  const set=new Set();
+  S.roster.filter(r=>r.campus===S.campus).forEach(r=>{
+    r.hrts.forEach(h=>set.add(h)); Object.values(r.subs).forEach(s=>set.add(s));
+  });
+  Object.keys(P.classes).forEach(cls=>Object.keys(P.classes[cls]).forEach(l=>{
+    const a=P.classes[cls][l].abbr; if(a) set.add(a);
+  }));
+  return [...set].filter(Boolean).sort();
+}
+
+/* a teacher is free if the grid cell is empty AND they teach no class that lesson */
+function freeAt(P,code,lesson){
+  if(!code) return false;
+  if(P.busy[code] && txt(P.busy[code][lesson])!=='') return false;
+  for(const cls in P.classes){ const cell=P.classes[cls][lesson];
+    if(cell && cell.abbr===code) return false; }
+  return true;
+}
+
+/* ============================ UI WIRING ============================ */
+$('campus').onchange=onCampus;
+$('date').onchange=onDate;
+function onCampus(){
+  S.campus=$('campus').value;
+  const list=S.roster.filter(r=>r.campus===S.campus).map(r=>r.cls);
+  const inTT=()=>{ try{return Object.keys(S.parsed.classes);}catch(e){return [];} };
+  const grades=[...new Set(list.map(c=>c[0]))].sort();
+  $('grades').innerHTML=grades.map(g=>'<span class="chip" data-g="'+g+'">G'+g+'</span>').join('');
+  [...$('grades').children].forEach(el=>el.onclick=()=>{el.classList.toggle('on'); renderClasses();});
+  renderClasses();
+}
+function onDate(){
+  const v=$('date').value; if(!v) return;
+  const d=new Date(v+'T00:00:00'); const day=DAYS[d.getDay()];
+  $('dayShow').value=day;
+  const sheets=S.byCampus[S.campus]||{};
+  S.day=day; S.sheet=sheets[day.toLowerCase()]||null;
+  if(!S.sheet){ $('dayShow').value=day+' — no sheet'; S.parsed=null; return; }
+  S.parsed=parseDay(S.sheet);
+  renderClasses();
+}
+function selectedGrades(){ return [...$('grades').children].filter(e=>e.classList.contains('on')).map(e=>e.dataset.g); }
+function renderClasses(){
+  const gs=selectedGrades();
+  const list=S.roster.filter(r=>r.campus===S.campus && gs.includes(r.cls[0])).map(r=>r.cls).sort();
+  const prev={}; [...$('classes').children].forEach(e=>prev[e.dataset.c]=e.classList.contains('on'));
+  $('classes').innerHTML=list.map(c=>'<span class="chip '+(prev[c]===false?'':'on')+'" data-c="'+c+'">'+c+'</span>').join('')
+    || '<span class="muted">Pick one or more grades above.</span>';
+  [...$('classes').children].forEach(el=>{ if(el.dataset.c) el.onclick=()=>{el.classList.toggle('on'); capacity();}; });
+  capacity();
+}
+function selectedClasses(){ return [...$('classes').children].filter(e=>e.classList.contains('on')).map(e=>e.dataset.c); }
+function capacity(){
+  const n=selectedClasses().length, st=+$('stations').value||2;
+  $('capacity').textContent = n? n+' classes ÷ '+st+' stations = '+Math.ceil(n/st)+' lesson slots needed.' : '';
+}
+$('stations').oninput=capacity;
+
+function buildBellTable(){
+  $('bellTbl').innerHTML='<tr><th>Lesson</th>'+BELL.map(b=>'<th>'+b.label.replace('Lesson ','L')+'</th>').join('')+'</tr>'+
+   '<tr><th>Start</th>'+BELL.map((b,i)=>'<td><input data-i="'+i+'" data-k="s" value="'+b.s+'"></td>').join('')+'</tr>'+
+   '<tr><th>End</th>'+BELL.map((b,i)=>'<td><input data-i="'+i+'" data-k="e" value="'+b.e+'"></td>').join('')+'</tr>';
+  $('bellTbl').querySelectorAll('input').forEach(inp=>{
+    inp.oninput=()=>{ BELL[+inp.dataset.i][inp.dataset.k]=inp.value.trim(); };
+  });
+}
+
+/* ============================ ASSIGNMENT ENGINE ============================ */
+function buildPlan(){
+  const P=S.parsed; if(!P) throw new Error('No timetable sheet for '+S.day+'.');
+  const classes=selectedClasses(); if(!classes.length) throw new Error('No classes selected.');
+  const stations=Math.max(1,+$('stations').value||2);
+  const st=mins($('startT').value)||mins('10:20');
+  const startIdx=BELL.findIndex(b=>mins(b.e)>st && P.classes[classes[0]] && P.classes[classes[0]][b.key]!==undefined);
+  let idx = BELL.findIndex(b=>mins(b.s)>=st);
+  if(idx<0) idx=BELL.findIndex(b=>mins(b.e)>st);
+  if(idx<0) idx=3;
+  const need=Math.ceil(classes.length/stations);
+  const slots=[];
+  for(let i=idx;i<BELL.length && slots.length<need;i++){
+    const b=BELL[i];
+    const anyLesson=classes.some(c=>P.classes[c] && P.classes[c][b.key] && (P.classes[c][b.key].abbr||P.classes[c][b.key].subject));
+    if(anyLesson) slots.push(b);
+  }
+  if(slots.length<need) throw new Error('Not enough lessons left in the day: need '+need+' slots but only '+slots.length+' available after '+$('startT').value+'.');
+
+  // cost of putting a class in a slot
+  const cost=(cls,b)=>{
+    const cell=(P.classes[cls]||{})[b.key]||{};
+    let c=0;
+    if(!cell.abbr) c+=40;                                    // nobody timetabled
+    if(/^p\.?e\.?$/i.test(cell.subject||'')) c+=12;          // avoid PE
+    if(/study hall/i.test(cell.subject||'')) c+=4;
+    const rs=rosterOf(cls);
+    const hrFree=rs? rs.hrts.some(h=>freeAt(P,h,b.key) && h!==cell.abbr) : false;
+    const hrTeaching=rs? rs.hrts.includes(cell.abbr) : false;
+    if(!hrFree && !hrTeaching) c+=6;                          // no familiar face available
+    return c;
+  };
+  // greedy then local swap improvement
+  const seats=[]; slots.forEach(b=>{ for(let k=0;k<stations && seats.length<classes.length;k++) seats.push(b); });
+  let order=classes.slice();
+  const total=o=>o.reduce((s,c,i)=>s+cost(c,seats[i]),0);
+  let best=order.slice(), bestC=total(best), improved=true, guard=0;
+  while(improved && guard++<200){
+    improved=false;
+    for(let i=0;i<best.length;i++) for(let j=i+1;j<best.length;j++){
+      const t=best.slice(); [t[i],t[j]]=[t[j],t[i]];
+      const c=total(t); if(c<bestC-0.0001){best=t;bestC=c;improved=true;}
+    }
+  }
+  // build rows
+  const trim=Math.max(0,+$('trim').value||0);
+  const usedInSlot={}, usedDay=new Set(), rows=[], warn=[];
+  best.forEach((cls,i)=>{
+    const b=seats[i]; const cell=(P.classes[cls]||{})[b.key]||{};
+    usedInSlot[b.key]=usedInSlot[b.key]||new Set();
+    if(cell.abbr) usedInSlot[b.key].add(cell.abbr);
+    rows.push({cls, slot:b, lesson:b.key, subject:cell.subject||'',
+               teacher:cell.abbr||'', support:'', time:b.s+' – '+hhmm(Math.max(mins(b.s),mins(b.e)-trim))});
+  });
+  rows.sort((a,b)=>BELL.indexOf(a.slot)-BELL.indexOf(b.slot) || a.cls.localeCompare(b.cls));
+  rows.forEach(r=>{
+    const rs=rosterOf(r.cls), L=r.lesson, used=usedInSlot[L];
+    const cand=[];
+    if(rs){ rs.hrts.forEach(h=>cand.push([h,'HRT'])); SUBJ_COLS.forEach(s=>{ if(rs.subs[s]) cand.push([rs.subs[s],s+' teacher']); }); }
+    let pick=null,why='';
+    for(const [code,role] of cand){
+      if(!code||code===r.teacher||used.has(code)) continue;
+      if(!freeAt(P,code,L)) continue;
+      if(usedDay.has(code)) continue;
+      pick=code; why=role; break;
+    }
+    if(!pick) for(const [code,role] of cand){          // allow reuse across the day if nothing else
+      if(!code||code===r.teacher||used.has(code)) continue;
+      if(!freeAt(P,code,L)) continue;
+      pick=code; why=role+' (2nd duty today)'; break;
+    }
+    if(!pick){                                          // any free teacher on campus
+      const grade=r.cls[0];
+      const sameGrade=new Set(S.roster.filter(x=>x.campus===S.campus && x.cls[0]===grade)
+        .flatMap(x=>[...x.hrts,...Object.values(x.subs)]));
+      const all=campusTeachers(P).sort((a,b)=>(sameGrade.has(b)?1:0)-(sameGrade.has(a)?1:0)||a.localeCompare(b));
+      for(const code of all){
+        if(code===r.teacher||used.has(code)||usedDay.has(code)) continue;
+        if(!freeAt(P,code,L)) continue;
+        pick=code; why='free teacher'; break;
+      }
+    }
+    const hrtIsSubject = rs && rs.hrts.includes(r.teacher);
+    if(hrtIsSubject) r.hrtLeads=true;
+    if(pick){ used.add(pick); usedDay.add(pick); r.support=pick; r.supportRole=why;
+      if(!/HRT/.test(why) && !hrtIsSubject)
+        warn.push(r.cls+' (L'+L+'): HRT not free — '+nm(pick)+' assigned ('+why+').');
+    } else { warn.push(r.cls+' (L'+L+'): no free supporting teacher found — please fill in manually.'); }
+    if(!r.teacher) warn.push(r.cls+' (L'+L+'): no lesson timetabled — subject teacher left blank.');
+    if(/^p\.?e\.?$/i.test(r.subject)) warn.push(r.cls+' (L'+L+'): this is a PE lesson.');
+  });
+  S.rows=rows;
+  return {rows,warn,slots};
+}
+const nm=code=>code?(S.teachers[code]?code+' ('+S.teachers[code]+')':code):'';
+
+/* ============================ RENDER RESULT ============================ */
+$('btnGen').onclick=$('btnRe').onclick=()=>{
+  try{
+    const {rows,warn}=buildPlan();
+    const P=S.parsed;
+    const allT=campusTeachers(P);
+    const freeList=l=>allT.filter(c=>freeAt(P,c,l));
+    let h='<tr><th style="width:16%">Time</th><th style="width:8%">Class</th>'+
+      '<th style="width:30%">Subject Teacher<br><span class="muted">(Please bring ALL the students to the '+$('venue').value+')</span></th>'+
+      '<th style="width:30%">Supporting Teacher<br><span class="muted">(Please go to the '+$('venue').value+' to support your students.)</span></th>'+
+      '<th style="width:16%">Student (NO Immunization)</th></tr>';
+    let prev=null;
+    rows.forEach((r,i)=>{
+      const same=prev===r.lesson; prev=r.lesson;
+      h+='<tr data-i="'+i+'">'+
+        '<td>'+(same?'<span class="muted">↑ same slot</span>':
+          '<input class="t-time" value="'+r.time+'"> <span class="badge">L'+r.lesson+'</span>')+'</td>'+
+        '<td><b>'+r.cls+'</b></td>'+
+        '<td><select class="t-sub">'+allT.map(c=>'<option value="'+c+'"'+(c===r.teacher?' selected':'')+'>'+nm(c)+'</option>').join('')+
+          '</select> <span class="badge">'+(r.subject||'—')+'</span>'+
+          (r.hrtLeads?' <span class="badge">HRT brings class</span>':'')+'</td>'+
+        '<td><select class="t-sup"><option value="">— none —</option>'+
+          freeList(r.lesson).map(c=>'<option value="'+c+'"'+(c===r.support?' selected':'')+'>'+nm(c)+'</option>').join('')+
+          '</select> '+(r.supportRole?'<span class="badge'+(/HRT/.test(r.supportRole)?'':' w')+'">'+r.supportRole+'</span>':'')+'</td>'+
+        '<td><input class="t-no" value=""></td></tr>';
+    });
+    $('outTbl').innerHTML=h;
+    $('warnings').innerHTML = warn.length
+      ? '<div class="note"><b>Check these:</b><br>'+warn.join('<br>')+'</div>'
+      : '<div class="okbox">All classes matched with a free HRT — no clashes.</div>';
+    const first=rows[0], last=rows[rows.length-1];
+    $('resMeta').textContent='· '+S.campus+' · '+S.day+' · '+first.time.split(' – ')[0]+'–'+last.time.split(' – ')[1];
+    if(!$('remarks').value.trim()) $('remarks').value=defaultRemarks();
+    if(!$('title').value.trim()) $('title').value=defaultTitle();
+    $('cRes').classList.remove('hide');
+    $('cRes').scrollIntoView({behavior:'smooth'});
+  }catch(e){ alert(e.message); }
+};
+function defaultTitle(){
+  const gs=[...new Set(selectedClasses().map(c=>c[0]))].sort();
+  return 'Arrangement of '+gs.map(g=>'G'+g).join(' & ')+' Immunization ('+S.campus+')';
+}
+function defaultRemarks(){
+  const v=$('venue').value, st=+$('stations').value||2;
+  const gs=[...new Set(selectedClasses().map(c=>c[0]))].sort().map(g=>'G'+g).join(' and ');
+  return gs+' Immunisation will take place at the '+v+'.\n'+
+    'There will be '+st+' stations.\n'+
+    'Normal recess on that day.\n'+
+    'Please arrive at the '+v+' on time.\n'+
+    'Students should line up according to their class number. For the ones not getting the shot, please line up at the end of the line.';
+}
+
+/* ============================ WORD EXPORT ============================ */
+function collect(){
+  const out=[];
+  $('outTbl').querySelectorAll('tr[data-i]').forEach(tr=>{
+    const i=+tr.dataset.i, r=S.rows[i];
+    const timeEl=tr.querySelector('.t-time');
+    out.push({
+      time: timeEl? timeEl.value : null,           // null = merge with the row above
+      lesson: r.lesson, cls:r.cls,
+      sub: tr.querySelector('.t-sub').value, subject:r.subject,
+      sup: tr.querySelector('.t-sup').value,
+      no : tr.querySelector('.t-no').value
+    });
+  });
+  return out;
+}
+const esc=s=>String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+function P_(text,{b=false,sz=22,align='left',after=60}={}){
+  return '<w:p><w:pPr><w:jc w:val="'+align+'"/><w:spacing w:after="'+after+'"/></w:pPr>'+
+   '<w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/>'+(b?'<w:b/>':'')+'<w:sz w:val="'+sz+'"/></w:rPr>'+
+   '<w:t xml:space="preserve">'+esc(text)+'</w:t></w:r></w:p>';
+}
+function cell(lines,{w=2000,b=false,vm=null,sz=20,align='left',shd=null}={}){
+  const body=(Array.isArray(lines)?lines:[lines]).map(l=>
+    '<w:p><w:pPr><w:jc w:val="'+align+'"/><w:spacing w:after="0"/></w:pPr>'+
+    (l===''?'':'<w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/>'+(b?'<w:b/>':'')+
+      '<w:sz w:val="'+sz+'"/></w:rPr><w:t xml:space="preserve">'+esc(l)+'</w:t></w:r>')+'</w:p>').join('');
+  return '<w:tc><w:tcPr><w:tcW w:w="'+w+'" w:type="dxa"/>'+
+    (vm?'<w:vMerge'+(vm==='restart'?' w:val="restart"':'')+'/>':'')+
+    (shd?'<w:shd w:val="clear" w:fill="'+shd+'"/>':'')+
+    '<w:vAlign w:val="center"/></w:tcPr>'+body+'</w:tc>';
+}
+function buildDocXml(){
+  const rows=collect(), venue=$('venue').value, dateStr=fmtDate($('date').value), day=S.day;
+  const W=[1700,900,2900,2900,1600];
+  let body='';
+  body+=P_($('title').value,{b:true,sz:28,align:'center',after:200});
+  body+=P_('Date: '+dateStr+' ('+day+')',{b:true,sz:22,after:40});
+  const t0=rows[0].time.split('–')[0].trim();
+  let t1=''; rows.forEach(r=>{ if(r.time) t1=r.time.split('–')[1].trim(); });
+  body+=P_('Time: '+t0+' – '+t1,{b:true,sz:22,after:40});
+  body+=P_('Venue: '+venue,{b:true,sz:22,after:40});
+  body+=P_('Schedule:',{b:true,sz:22,after:80});
+  let tbl='<w:tbl><w:tblPr><w:tblW w:w="10000" w:type="dxa"/>'+
+    '<w:tblBorders>'+['top','left','bottom','right','insideH','insideV'].map(s=>
+      '<w:'+s+' w:val="single" w:sz="6" w:space="0" w:color="000000"/>').join('')+'</w:tblBorders>'+
+    '</w:tblPr>';
+  tbl+='<w:tr><w:trPr><w:tblHeader/></w:trPr>'+
+    cell('Time',{w:W[0],b:true,align:'center',shd:'DCE6F1'})+
+    cell('Class',{w:W[1],b:true,align:'center',shd:'DCE6F1'})+
+    cell(['Subject Teacher','(Please bring ALL the students to the '+venue+')'],{w:W[2],b:true,align:'center',shd:'DCE6F1'})+
+    cell(['Supporting Teacher','(Please go to the '+venue+' to support your students.)'],{w:W[3],b:true,align:'center',shd:'DCE6F1'})+
+    cell('Student (NO Immunization)',{w:W[4],b:true,align:'center',shd:'DCE6F1'})+'</w:tr>';
+  rows.forEach(r=>{
+    const merge = r.time? 'restart' : 'cont';
+    const timeLines = r.time? [r.time,'(Lesson '+r.lesson+')'] : [''];
+    tbl+='<w:tr>'+
+      cell(timeLines,{w:W[0],align:'center',vm:merge})+
+      cell(r.cls,{w:W[1],b:true,align:'center'})+
+      cell(nm(r.sub)+(r.subject?' – '+r.subject:''),{w:W[2]})+
+      cell(nm(r.sup),{w:W[3]})+
+      cell(r.no,{w:W[4]})+'</w:tr>';
+  });
+  tbl+='</w:tbl>';
+  body+=tbl;
+  body+=P_('',{after:120});
+  body+=P_('Remarks:',{b:true,sz:22,after:60});
+  $('remarks').value.split('\n').filter(l=>l.trim()).forEach(l=>{
+    body+='<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>'+
+      '<w:spacing w:after="40"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/>'+
+      '<w:sz w:val="22"/></w:rPr><w:t xml:space="preserve">'+esc(l.trim())+'</w:t></w:r></w:p>';
+  });
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
+   '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'+
+   '<w:body>'+body+'<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>'+
+   '<w:pgMar w:top="1000" w:right="900" w:bottom="1000" w:left="900"/></w:sectPr></w:body></w:document>';
+}
+function fmtDate(v){
+  if(!v) return '';
+  const d=new Date(v+'T00:00:00'), n=d.getDate();
+  const suf=(n%10==1&&n!=11)?'st':(n%10==2&&n!=12)?'nd':(n%10==3&&n!=13)?'rd':'th';
+  return n+suf+' '+d.toLocaleString('en-GB',{month:'long'})+', '+d.getFullYear();
+}
+$('btnDoc').onclick=async()=>{
+  const zip=new JSZip();
+  zip.file('[Content_Types].xml','<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
+   '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'+
+   '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'+
+   '<Default Extension="xml" ContentType="application/xml"/>'+
+   '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'+
+   '<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>'+
+   '</Types>');
+  zip.folder('_rels').file('.rels','<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
+   '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+
+   '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'+
+   '</Relationships>');
+  const w=zip.folder('word');
+  w.file('document.xml',buildDocXml());
+  w.folder('_rels').file('document.xml.rels','<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
+   '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+
+   '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>'+
+   '</Relationships>');
+  w.file('numbering.xml','<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
+   '<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'+
+   '<w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/>'+
+   '<w:lvlText w:val="•"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="480" w:hanging="240"/></w:pPr>'+
+   '</w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>');
+  const blob=await zip.generateAsync({type:'blob',
+    mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});
+  const d=($('date').value||'').replace(/-/g,'').slice(2);
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=d+' '+S.campus+' Arrangement of Immunization.docx';
+  a.click();
+};
+</script>
+</body>
+</html>
