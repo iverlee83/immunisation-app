@@ -66,7 +66,7 @@ details summary{cursor:pointer;font-size:13px;color:var(--accent);font-weight:60
 <body>
 <header>
   <h1>Immunisation Arrangement Generator</h1>
-  <p>St. Hilary's School (Primary) &middot; builds the arrangement notice from the Overall Timetable and Teaching Roster</p>
+  <p>St. Hilary's School (Primary) &middot; builds the arrangement notice from the Overall Timetable or the Teacher Timetable</p>
 </header>
 
 <div class="wrap">
@@ -76,17 +76,17 @@ details summary{cursor:pointer;font-size:13px;color:var(--accent);font-weight:60
   <h2><span class="step">1</span> Upload files</h2>
   <div class="grid g2">
     <div>
-      <label class="f">Campus Overall Timetable (.xlsx)</label>
+      <label class="f">Timetable (.xlsx) — required</label>
       <div class="filebox" id="box1">
         <input type="file" id="fTT" accept=".xlsx,.xlsm">
-        <small>e.g. 2627 MK Overall Timetable.xlsx</small>
+        <small>Either a campus <b>Overall Timetable</b> or the <b>Teacher Timetable</b> — auto-detected</small>
       </div>
     </div>
     <div>
-      <label class="f">Teaching Roster (.xlsx)</label>
+      <label class="f">Teaching Roster (.xlsx) — optional</label>
       <div class="filebox" id="box2">
         <input type="file" id="fRS" accept=".xlsx,.xlsm">
-        <small>e.g. 2627 Teaching Roster1.xlsx</small>
+        <small>Adds campus filtering and subject-teacher fallbacks</small>
       </div>
     </div>
   </div>
@@ -182,22 +182,41 @@ $('fRS').onchange=e=>{ if(!e.target.files[0])return;
   readWb(e.target.files[0],wb=>{S.rsWb=wb; $('box2').classList.add('ok'); afterLoad();}); };
 
 function afterLoad(){
-  if(!S.ttWb||!S.rsWb) return;
+  if(!S.ttWb) return;
   try{
-    parseRoster();
+    S.roster=[];
+    if(S.rsWb) parseRoster();
+    detectMode();
     detectCampuses();
     buildBellTable();
     $('cSet').classList.remove('hide');
     $('cCls').classList.remove('hide');
-    const d=new Date(); d.setDate(d.getDate()+1);
-    $('date').value=d.toISOString().slice(0,10);
+    if(!$('date').value){ const d=new Date(); d.setDate(d.getDate()+1);
+      $('date').value=d.toISOString().slice(0,10); }
     onCampus(); onDate();
-    $('loadMsg').innerHTML='<div class="okbox">Loaded: '+S.campuses.join(', ')+
-      ' timetable &middot; '+S.roster.length+' classes in the roster &middot; '+
-      Object.keys(S.teachers).length+' teacher names.</div>';
+    const bits=[];
+    bits.push(S.mode==='teacher'
+      ? '<b>Teacher Timetable</b> detected — '+S.ttSheets+' teacher sheets read'
+      : '<b>Overall Timetable</b> detected — '+S.campuses.join(', '));
+    bits.push(S.rsWb? S.roster.length+' classes in the roster' : 'no roster uploaded');
+    bits.push(Object.keys(S.teachers).length+' teacher names');
+    let msg='<div class="okbox">Loaded: '+bits.join(' &middot; ')+'.</div>';
+    if(S.mode==='teacher') msg+='<div class="note"><b>Note:</b> a teacher counts as free only when the slot is blank — '+
+      'CP entries such as "P1 Chi co-plan" or "GS plan" are treated as busy. Homeroom entries identify the HRTs.'+
+      (S.rsWb?'':' Without a roster there is no campus column, so all classes in the file are listed — untick the ones not joining.')+'</div>';
+    $('loadMsg').innerHTML=msg;
   }catch(err){
     $('loadMsg').innerHTML='<div class="note">Could not read the files: '+err.message+'</div>';
   }
+}
+
+/* Overall Timetable = sheets named "<Campus> <Day>". Otherwise assume a per-teacher Teacher Timetable. */
+function detectMode(){
+  const dayS=S.ttWb.SheetNames.filter(n=>
+    /^([A-Za-z]{2,3})\s+(Monday|Tuesday|Wednesday|Thursday|Friday)$/i.test(n.trim()));
+  S.mode = dayS.length>=3 ? 'overall' : 'teacher';
+  S.ttCache={};
+  if(S.mode==='teacher') parseTeacherWorkbook();
 }
 
 /* ============================ ROSTER ============================ */
@@ -227,25 +246,140 @@ function parseRoster(){
 }
 const rosterOf=cls=>S.roster.find(r=>r.cls===cls)||null;
 
+/* Teacher-Timetable mode with no roster file: derive HRTs (Homeroom rows) and each class's
+   own teachers (ordered by how many lessons they take that class). */
+function synthRoster(P){
+  S.roster=[];
+  const all=new Set([...Object.keys(P.classes),...Object.keys(P.hrts)]);
+  [...all].sort().forEach(cls=>{
+    const hrts=(P.hrts[cls]||[]).slice();
+    const freq=P.freq[cls]||{};
+    const subs={};
+    Object.keys(freq).filter(c=>!hrts.includes(c)).sort((a,b)=>freq[b]-freq[a])
+      .forEach((code,i)=>{ subs['teacher of '+cls+' #'+(i+1)]=code; });
+    S.roster.push({campus:'All classes', cls, hrts, subs});
+  });
+}
+
 /* ============================ TIMETABLE ============================ */
 function detectCampuses(){
   S.campuses=[]; S.byCampus={};
-  S.ttWb.SheetNames.forEach(n=>{
-    const m=/^([A-Za-z]{2,3})\s+(Monday|Tuesday|Wednesday|Thursday|Friday)$/i.exec(n.trim());
-    if(m){ const c=m[1].toUpperCase();
-      if(!S.byCampus[c]){S.byCampus[c]={}; S.campuses.push(c);}
-      S.byCampus[c][m[2].toLowerCase()]=n; }
-  });
-  if(!S.campuses.length) throw new Error('no "<Campus> <Day>" sheets found');
-  $('campus').innerHTML=S.campuses.map(c=>'<option>'+c+'</option>').join('');
-  // teacher code -> name
-  S.teachers={};
-  const tn=S.ttWb.SheetNames.find(n=>/^teachers?$/i.test(n.trim()));
-  if(tn){
-    XLSX.utils.sheet_to_json(S.ttWb.Sheets[tn],{header:1,defval:''}).forEach(r=>{
-      const a=txt(r[0]),b=txt(r[1]); if(a&&b) S.teachers[a]=b;
+  if(S.mode==='overall'){
+    S.ttWb.SheetNames.forEach(n=>{
+      const m=/^([A-Za-z]{2,3})\s+(Monday|Tuesday|Wednesday|Thursday|Friday)$/i.exec(n.trim());
+      if(m){ const c=m[1].toUpperCase();
+        if(!S.byCampus[c]){S.byCampus[c]={}; S.campuses.push(c);}
+        S.byCampus[c][m[2].toLowerCase()]=n; }
+    });
+    if(!S.campuses.length) throw new Error('no "<Campus> <Day>" sheets found');
+    // teacher code -> name
+    const tn=S.ttWb.SheetNames.find(n=>/^teachers?$/i.test(n.trim()));
+    if(tn){
+      XLSX.utils.sheet_to_json(S.ttWb.Sheets[tn],{header:1,defval:''}).forEach(r=>{
+        const a=txt(r[0]),b=txt(r[1]); if(a&&b && !S.teachers[a]) S.teachers[a]=b;
+      });
+    }
+  } else {
+    // teacher-timetable mode: campuses come from the roster if we have one
+    S.campuses = S.rsWb ? [...new Set(S.roster.map(r=>r.campus))] : ['All classes'];
+    ['monday','tuesday','wednesday','thursday','friday'].forEach(d=>{
+      S.campuses.forEach(c=>{ S.byCampus[c]=S.byCampus[c]||{}; S.byCampus[c][d]=d; });
     });
   }
+  $('campus').innerHTML=S.campuses.map(c=>'<option>'+c+'</option>').join('');
+}
+
+/* ---- Teacher Timetable (one sheet per teacher) ---- */
+function parseTeacherWorkbook(){
+  const days=['Monday','Tuesday','Wednesday','Thursday','Friday'];
+  const out={}; days.forEach(d=>out[d]={classes:{},busy:{},hrts:{},freq:{}});
+  let sheets=0;
+  const codes=S.ttWb.SheetNames.filter(n=>/^[A-Za-z]{1,6}$/.test(txt(n)));
+  const grids=codes.map(sn=>({sn, code:txt(sn),
+    aoa:XLSX.utils.sheet_to_json(S.ttWb.Sheets[sn],{header:1,defval:'',blankrows:true})}));
+  /* Pass 1 — learn which lesson each col-B time label belongs to. Some sheets are missing the
+     lesson number in column A, so the time text is the reliable key. */
+  const timeKey={};
+  grids.forEach(g=>{
+    const at=(r,c)=>txt((g.aoa[r]||[])[c]);
+    for(let r=0;r<g.aoa.length;r++){
+      const a=at(r,0), b=at(r,1);
+      if(/^[1-9]$/.test(a) && /^\d{1,2}:\d{2}/.test(b)){ timeKey[b]=timeKey[b]||{}; timeKey[b][+a]=(timeKey[b][+a]||0)+1; }
+    }
+  });
+  const lessonForTime={};
+  Object.keys(timeKey).forEach(b=>{
+    const best=Object.keys(timeKey[b]).sort((x,y)=>timeKey[b][y]-timeKey[b][x])[0];
+    lessonForTime[b]=+best;
+  });
+  /* Pass 2 — read every teacher sheet */
+  grids.forEach(({code,aoa})=>{
+    const at=(r,c)=>txt((aoa[r]||[])[c]);
+    // teacher's full name: cell after a "Teachers:" label
+    for(let r=0;r<6;r++) for(let c=0;c<20;c++)
+      if(/^teachers?:?$/i.test(at(r,c)))
+        for(let k=c+1;k<c+6;k++){ const v=at(r,k); if(v && !S.teachers[code]){S.teachers[code]=v; break;} }
+    // day label row + column spans
+    let labRow=-1, labs=[];
+    for(let r=0;r<12 && labRow<0;r++){
+      const found=[];
+      days.forEach(d=>{ for(let c=0;c<25;c++) if(new RegExp('^'+d+'$','i').test(at(r,c))) found.push({d,c}); });
+      if(found.length>=4){ labRow=r; labs=found.sort((a,b)=>a.c-b.c); }
+    }
+    if(labRow<0) return;
+    const width=Math.max(...aoa.map(r=>r?r.length:0));
+    const span={};
+    labs.forEach((l,i)=>{
+      const from = i===0 ? Math.max(0,l.c-1) : l.c;               // Monday's data sits one col left of its label
+      const to   = i===labs.length-1 ? width-1 : labs[i+1].c-1;
+      span[l.d]=[from,to];
+    });
+    // rows: homeroom / reading / lessons 1-9 (time label first, lesson number as backup)
+    const rowOf={};
+    for(let r=0;r<aoa.length;r++){
+      const a=at(r,0), b=at(r,1);
+      if(/^08:20/.test(b)) rowOf['Homeroom']=r;
+      if(/^08:35/.test(b)) rowOf['Reading']=r;
+      if(lessonForTime[b]!==undefined) rowOf[lessonForTime[b]]=r;
+      else if(/^[1-9]$/.test(a) && rowOf[+a]===undefined) rowOf[+a]=r;
+    }
+    const keyed=new Set(Object.values(rowOf));
+    const cellIn=(r,d)=>{ const [f,t]=span[d]||[0,0];
+      let first='';
+      for(let rr=r;rr<=r+1;rr++){
+        if(rr>r && keyed.has(rr)) break;              // never spill into the next lesson's row
+        for(let c=f;c<=t;c++){
+          const v=at(rr,c); if(!v) continue;
+          if(/^\*?\s*[1-6][A-Z]\b/.test(v)) return v; // a class entry wins over Elite OLE / duty text
+          if(!first) first=v;
+        }
+      }
+      return first; };
+    days.forEach(d=>{
+      const O=out[d];
+      Object.keys(rowOf).forEach(k=>{
+        const key = /^\d+$/.test(k)? +k : k;
+        const v=cellIn(rowOf[k],d); if(!v) return;
+        if(key!=='Homeroom'){ O.busy[code]=O.busy[code]||{}; O.busy[code][key]=v; }
+        const m=/^\s*\*?\s*([1-6][A-Z])\b/.exec(v);
+        if(!m) return;
+        const cls=m[1];
+        let subject=v.slice(m.index+m[0].length).replace(/^\s*[\/|-]\s*/,'').trim();
+        if(key==='Homeroom' || /homeroom/i.test(subject)){
+          O.hrts[cls]=O.hrts[cls]||[]; if(!O.hrts[cls].includes(code)) O.hrts[cls].push(code);
+          return;
+        }
+        if(/co-plan|elite|ole|meeting|remedial|enhancement|dreamstarter|cca/i.test(subject)) return;
+        O.classes[cls]=O.classes[cls]||{};
+        O.classes[cls][key]={subject:subject.replace(/\s*\(.*?\)\s*/g,'').trim(), abbr:code};
+        O.freq[cls]=O.freq[cls]||{}; O.freq[cls][code]=(O.freq[cls][code]||0)+1;
+      });
+    });
+    sheets++;
+  });
+  S.ttSheets=sheets;
+  S.ttDays=out;
+  if(!sheets) throw new Error('no teacher sheets recognised in this file');
 }
 
 /* Parse one day sheet into {classes:{cls:{lesson:{subject,abbr}}}, grid:{code:{lesson:val}}} */
@@ -338,12 +472,16 @@ $('campus').onchange=onCampus;
 $('date').onchange=onDate;
 function onCampus(){
   S.campus=$('campus').value;
+  buildGrades();
+  if(S.parsed) renderClasses();
+}
+function buildGrades(){
+  const on={}; [...$('grades').children].forEach(e=>on[e.dataset.g]=e.classList.contains('on'));
   const list=S.roster.filter(r=>r.campus===S.campus).map(r=>r.cls);
-  const inTT=()=>{ try{return Object.keys(S.parsed.classes);}catch(e){return [];} };
   const grades=[...new Set(list.map(c=>c[0]))].sort();
-  $('grades').innerHTML=grades.map(g=>'<span class="chip" data-g="'+g+'">G'+g+'</span>').join('');
+  $('grades').innerHTML=grades.map(g=>
+    '<span class="chip'+(on[g]?' on':'')+'" data-g="'+g+'">G'+g+'</span>').join('');
   [...$('grades').children].forEach(el=>el.onclick=()=>{el.classList.toggle('on'); renderClasses();});
-  renderClasses();
 }
 function onDate(){
   const v=$('date').value; if(!v) return;
@@ -351,8 +489,14 @@ function onDate(){
   $('dayShow').value=day;
   const sheets=S.byCampus[S.campus]||{};
   S.day=day; S.sheet=sheets[day.toLowerCase()]||null;
-  if(!S.sheet){ $('dayShow').value=day+' — no sheet'; S.parsed=null; return; }
-  S.parsed=parseDay(S.sheet);
+  if(!S.sheet){ $('dayShow').value=day+' — no timetable for this day'; S.parsed=null; return; }
+  if(S.mode==='teacher'){
+    S.parsed=S.ttDays[day];
+    if(!S.rsWb) synthRoster(S.parsed);          // no roster file: build one from the timetable
+  } else {
+    S.parsed=S.ttCache[S.sheet]||(S.ttCache[S.sheet]=parseDay(S.sheet));
+  }
+  buildGrades();
   renderClasses();
 }
 function selectedGrades(){ return [...$('grades').children].filter(e=>e.classList.contains('on')).map(e=>e.dataset.g); }
@@ -439,7 +583,14 @@ function buildPlan(){
   rows.forEach(r=>{
     const rs=rosterOf(r.cls), L=r.lesson, used=usedInSlot[L];
     const cand=[];
-    if(rs){ rs.hrts.forEach(h=>cand.push([h,'HRT'])); SUBJ_COLS.forEach(s=>{ if(rs.subs[s]) cand.push([rs.subs[s],s+' teacher']); }); }
+    if(rs){
+      rs.hrts.forEach(h=>cand.push([h,'HRT']));
+      const keys=Object.keys(rs.subs).sort((a,b)=>{                 // roster subjects first, in order
+        const ia=SUBJ_COLS.indexOf(a), ib=SUBJ_COLS.indexOf(b);
+        return (ia<0?99:ia)-(ib<0?99:ib);
+      });
+      keys.forEach(k=>{ if(rs.subs[k]) cand.push([rs.subs[k], SUBJ_COLS.includes(k)? k+' teacher':'own teacher']); });
+    }
     let pick=null,why='';
     for(const [code,role] of cand){
       if(!code||code===r.teacher||used.has(code)) continue;
