@@ -105,9 +105,12 @@ details summary{cursor:pointer;font-size:13px;color:var(--accent);font-weight:60
   <div class="grid g4" style="margin-top:14px">
     <div><label class="f">Start time of immunisation</label><input type="text" id="startT" value="10:20" placeholder="HH:MM"></div>
     <div><label class="f">Number of stations</label><input type="number" id="stations" value="2" min="1" max="6"></div>
-    <div><label class="f">Finish each session early by (min)</label><input type="number" id="trim" value="5" min="0" max="15"></div>
-    <div><label class="f">Extra lessons to search</label><input type="number" id="window" value="2" min="0" max="4"
-      title="The app may look this many lessons further on to find slots where the HRT is teaching"></div>
+    <div><label class="f">Length of each session</label><select id="sesLen">
+      <option value="15">15 minutes</option><option value="20" selected>20 minutes</option>
+      <option value="25">25 minutes</option><option value="30">30 minutes</option>
+      <option value="35">35 minutes</option></select></div>
+    <div><label class="f">Extra slots to search</label><input type="number" id="window" value="2" min="0" max="4"
+      title="The app may look this many sessions further on to find slots where the HRT is teaching"></div>
   </div>
   <div class="grid" style="margin-top:14px">
     <div><label class="f">Title</label><input type="text" id="title" placeholder="auto"></div>
@@ -528,9 +531,11 @@ $('btnAll').onclick=()=>{ [...$('classes').children].forEach(e=>{ if(e.dataset.c
 $('btnNone').onclick=()=>{ [...$('classes').children].forEach(e=>e.classList.remove('on')); capacity(); };
 function capacity(){
   const n=selectedClasses().length, st=+$('stations').value||2;
-  $('capacity').textContent = n? n+' classes ÷ '+st+' stations = '+Math.ceil(n/st)+' lesson slots needed.' : '';
+  const len=+($('sesLen')||{}).value||20, k=Math.ceil(n/st);
+  $('capacity').textContent = n? n+' classes ÷ '+st+' stations = '+k+' sessions of '+len+' min ('+(k*len)+' min in total).' : '';
 }
 $('stations').oninput=capacity;
+$('sesLen').onchange=capacity;
 
 function buildBellTable(){
   $('bellTbl').innerHTML='<tr><th>Lesson</th>'+BELL.map(b=>'<th>'+b.label.replace('Lesson ','L')+'</th>').join('')+'</tr>'+
@@ -553,37 +558,43 @@ function buildPlan(){
   if(idx<0) idx=3;
   const need=Math.ceil(classes.length/stations);
   const extra=Math.max(0,+$('window').value||0);
-  const avail=[];
-  for(let i=idx;i<BELL.length && avail.length<need+extra;i++){
-    const b=BELL[i];
-    const anyLesson=classes.some(c=>P.classes[c] && P.classes[c][b.key] && (P.classes[c][b.key].abbr||P.classes[c][b.key].subject));
-    if(anyLesson) avail.push(b);
-  }
-  if(avail.length<need) throw new Error('Not enough lessons left in the day: need '+need+' slots but only '+avail.length+' available after '+$('startT').value+'.');
+  const len=+$('sesLen').value||20;
+  const avail=buildSessions(st,len,need+extra);
+  if(avail.length<need) throw new Error('Not enough teaching time left in the day: need '+need+
+    ' sessions of '+len+' min but only '+avail.length+' fit after '+$('startT').value+'.');
 
-  /* --- cost of putting a class in a slot ------------------------------------
-     G1  : needs a supporting teacher — prefer a slot where an HRT is free.
-     G2-6: the class's own HRT should be teaching it, so the HRT brings them down.
-     PE / Music / V.A. are avoided unless the teacher is that class's HRT.       */
+  /* --- cost of putting a class in a session ---------------------------------
+     G1  : needs a supporting teacher — prefer a session where an HRT is free.
+     G2-6: the class's own HRT should be teaching, so the HRT brings them down.
+     PE / Music / V.A. avoided unless the teacher is that class's HRT.
+     A session that straddles two lessons wants ONE teacher covering both.      */
   const isSpecial=s=>/^(p\.?e\.?|music|v\.?a\.?|visual art)$/i.test((s||'').trim());
-  const cost=(cls,b)=>{
-    const cell=(P.classes[cls]||{})[b.key]||{};
-    const rs=rosterOf(cls);
-    const hrtTeaching = rs? rs.hrts.includes(cell.abbr) : false;
+  const legsOf=(cls,ses)=>ses.laps.map(l=>{
+    const cell=(P.classes[cls]||{})[l.key]||{};
+    return {key:l.key, label:l.label, min:l.min, abbr:cell.abbr||'', subject:cell.subject||''};
+  });
+  const freeAllLaps=(code,ses)=>ses.laps.every(l=>freeAt(P,code,l.key));
+  const cost=(cls,ses)=>{
+    const legs=legsOf(cls,ses), rs=rosterOf(cls);
+    const main=legs.slice().sort((a,b)=>b.min-a.min)[0]||{};
+    const codes=[...new Set(legs.map(l=>l.abbr).filter(Boolean))];
+    const hrtAll = rs? legs.every(l=>rs.hrts.includes(l.abbr)) : false;
+    const hrtMain= rs? rs.hrts.includes(main.abbr) : false;
     let c=0;
-    if(!cell.abbr) c+=60;                                        // nobody timetabled
-    if(isSpecial(cell.subject) && !hrtTeaching) c+=45;           // PE / Music / VA — last resort
-    if(/study hall|reading|assembly/i.test(cell.subject||'')) c+=8;
-    if(cls[0]==='1'){                                            // G1: supporting teacher wanted
-      const hrFree = rs? rs.hrts.some(h=>h!==cell.abbr && freeAt(P,h,b.key)) : false;
-      const ownFree= rs? Object.values(rs.subs).some(t=>t!==cell.abbr && freeAt(P,t,b.key)) : false;
+    if(!main.abbr) c+=60;                                          // nobody timetabled
+    if(codes.length>1) c+= 22;                                     // two teachers needed for one session
+    legs.forEach(l=>{ if(isSpecial(l.subject) && !(rs&&rs.hrts.includes(l.abbr))) c+=45*(l.min/ses.len); });
+    legs.forEach(l=>{ if(/study hall|reading|assembly/i.test(l.subject)) c+=8*(l.min/ses.len); });
+    if(cls[0]==='1'){                                              // G1: supporting teacher wanted
+      const hrFree = rs? rs.hrts.some(h=>!codes.includes(h) && freeAllLaps(h,ses)) : false;
+      const ownFree= rs? Object.values(rs.subs).some(t=>!codes.includes(t) && freeAllLaps(t,ses)) : false;
       if(!hrFree) c+= ownFree? 10 : 25;
-    } else {                                                     // G2-G6: HRT should bring them
-      if(!hrtTeaching) c+=30;
+    } else {                                                       // G2-G6: HRT should bring them
+      if(!hrtAll) c+= hrtMain? 10 : 30;
     }
     return c;
   };
-  /* choose which lessons to use (combinations within the window), then who goes where */
+  /* choose which sessions to use (combinations within the window), then who goes where */
   const combos=[];
   (function pick(start,acc){
     if(acc.length===need){ combos.push(acc.slice()); return; }
@@ -602,44 +613,50 @@ function buildPlan(){
         const c=orderCost(seats,t); if(c<c0-1e-6){ord=t;c0=c;improved=true;}
       }
     }
-    const spread=(BELL.indexOf(combo[combo.length-1])-BELL.indexOf(combo[0])-(need-1))*6;  // prefer back-to-back
-    const late=(BELL.indexOf(combo[0])-idx)*8;                                             // stay near the start time
-    let brk=0;                                                                             // avoid running over a long break
-    for(let i=1;i<combo.length;i++) if(mins(combo[i].s)-mins(combo[i-1].e)>20) brk+=25;
+    const first=avail.indexOf(combo[0]), last=avail.indexOf(combo[combo.length-1]);
+    const spread=(last-first-(need-1))*6;                      // prefer back-to-back sessions
+    const late=first*8;                                        // stay near the start time
+    let brk=0;
+    for(let i=1;i<combo.length;i++) if(combo[i].s-combo[i-1].e>20) brk+=25;   // avoid running over a break
     const tot=c0+spread+late+brk;
     if(tot<bestC){bestC=tot;best=ord;bestSeats=seats;}
   });
   const seats=bestSeats;
   // build rows
-  const trim=Math.max(0,+$('trim').value||0);
-  const usedInSlot={}, usedDay=new Set(), rows=[], warn=[];
+  const usedInSes={}, usedDay=new Set(), rows=[], warn=[];
   best.forEach((cls,i)=>{
-    const b=seats[i]; const cell=(P.classes[cls]||{})[b.key]||{};
-    usedInSlot[b.key]=usedInSlot[b.key]||new Set();
-    if(cell.abbr) usedInSlot[b.key].add(cell.abbr);
-    rows.push({cls, slot:b, lesson:b.key, subject:cell.subject||'',
-               teacher:cell.abbr||'', support:'', time:b.s+' – '+hhmm(Math.max(mins(b.s),mins(b.e)-trim))});
+    const ses=seats[i], legs=legsOf(cls,ses), key=ses.s+'-'+ses.e;
+    usedInSes[key]=usedInSes[key]||new Set();
+    legs.forEach(l=>{ if(l.abbr) usedInSes[key].add(l.abbr); });
+    rows.push({cls, ses, legs, key,
+               lessonLabel: [...new Set(legs.map(l=>String(l.label).replace('Lesson ','L')))].join(' → '),
+               subject: legs.map(l=>l.subject).filter(Boolean).join(' / '),
+               teacher: (legs.slice().sort((a,b)=>b.min-a.min)[0]||{}).abbr||'',
+               support:'', time: hhmm(ses.s)+' – '+hhmm(ses.e)});
   });
-  rows.sort((a,b)=>BELL.indexOf(a.slot)-BELL.indexOf(b.slot) || a.cls.localeCompare(b.cls));
-  { const used=[...new Set(seats)].map(b=>BELL.indexOf(b)).sort((a,b)=>a-b);
-    const gaps=[]; for(let i=1;i<used.length;i++)
-      for(let k=used[i-1]+1;k<used[i];k++) gaps.push(BELL[k].label);
-    if(gaps.length) warn.push('Slots are not back-to-back — '+gaps.join(', ')+
-      ' skipped to find lessons taught by the HRTs. Set "Extra lessons to search" to 0 to force consecutive lessons.');
+  rows.sort((a,b)=>a.ses.s-b.ses.s || a.cls.localeCompare(b.cls));
+  { const used=[...new Set(seats)].sort((a,b)=>a.s-b.s);
+    for(let i=1;i<used.length;i++) if(used[i].s>used[i-1].e)
+      warn.push('Gap in the schedule: nothing booked between '+hhmm(used[i-1].e)+' and '+hhmm(used[i].s)+
+        ' (used to find lessons taught by the HRTs). Set "Extra slots to search" to 0 to keep sessions back-to-back.');
   }
   rows.forEach(r=>{
-    const rs=rosterOf(r.cls), L=r.lesson, used=usedInSlot[L];
-    r.hrtLeads = !!(rs && rs.hrts.includes(r.teacher));
-    if(!r.teacher) warn.push(r.cls+' (L'+L+'): no lesson timetabled — subject teacher left blank.');
-    if(isSpecial(r.subject) && !r.hrtLeads)
-      warn.push(r.cls+' (L'+L+'): '+r.subject+' lesson — no other slot was free.');
+    const rs=rosterOf(r.cls), used=usedInSes[r.key], where=r.cls+' ('+r.time+')';
+    const codes=[...new Set(r.legs.map(l=>l.abbr).filter(Boolean))];
+    r.hrtLeads = !!(rs && codes.length>0 && codes.every(c=>rs.hrts.includes(c)));
+    r.crosses  = codes.length>1;
+    if(!codes.length) warn.push(where+': no lesson timetabled — subject teacher left blank.');
+    r.legs.forEach(l=>{ if(isSpecial(l.subject) && !(rs&&rs.hrts.includes(l.abbr)))
+      warn.push(where+': '+l.subject+' lesson ('+l.label+') — no better slot was free.'); });
+    if(r.crosses) warn.push(where+': the session runs across '+r.lessonLabel+
+      ' and no single teacher covers both — '+codes.map(nm).join(' then ')+'.');
 
     if(r.cls[0]!=='1'){                       // G2–G6: the HRT brings them, no supporting teacher
-      if(!r.hrtLeads) warn.push(r.cls+' (L'+L+'): the HRT is not teaching this slot ('+
+      if(!r.hrtLeads) warn.push(where+': the HRT is not teaching this slot ('+
         nm(r.teacher)+' brings the class) — add a supporting teacher below if you want one.');
       return;
     }
-    // G1 only: find a supporting teacher, HRT first
+    // G1 only: find a supporting teacher, HRT first — must be free for the whole session
     const cand=[];
     if(rs){
       rs.hrts.forEach(h=>cand.push([h,'HRT']));
@@ -651,14 +668,13 @@ function buildPlan(){
     }
     let pick=null,why='';
     for(const [code,role] of cand){
-      if(!code||code===r.teacher||used.has(code)) continue;
-      if(!freeAt(P,code,L)) continue;
-      if(usedDay.has(code)) continue;
+      if(!code||codes.includes(code)||used.has(code)||usedDay.has(code)) continue;
+      if(!freeAllLaps(code,r.ses)) continue;
       pick=code; why=role; break;
     }
-    if(!pick) for(const [code,role] of cand){          // allow reuse across the day if nothing else
-      if(!code||code===r.teacher||used.has(code)) continue;
-      if(!freeAt(P,code,L)) continue;
+    if(!pick) for(const [code,role] of cand){          // allow a second duty today if nothing else
+      if(!code||codes.includes(code)||used.has(code)) continue;
+      if(!freeAllLaps(code,r.ses)) continue;
       pick=code; why=role+' (2nd duty today)'; break;
     }
     if(!pick){                                          // any free teacher on campus
@@ -667,21 +683,62 @@ function buildPlan(){
         .flatMap(x=>[...x.hrts,...Object.values(x.subs)]));
       const all=campusTeachers(P).sort((a,b)=>(sameGrade.has(b)?1:0)-(sameGrade.has(a)?1:0)||a.localeCompare(b));
       for(const code of all){
-        if(code===r.teacher||used.has(code)||usedDay.has(code)) continue;
-        if(!freeAt(P,code,L)) continue;
+        if(codes.includes(code)||used.has(code)||usedDay.has(code)) continue;
+        if(!freeAllLaps(code,r.ses)) continue;
         pick=code; why='free teacher'; break;
       }
     }
     if(pick){ used.add(pick); usedDay.add(pick); r.support=pick; r.supportRole=why;
       if(!/HRT/.test(why) && !r.hrtLeads)
-        warn.push(r.cls+' (L'+L+'): HRT not free — '+nm(pick)+' assigned ('+why+').');
-    } else { warn.push(r.cls+' (L'+L+'): no free supporting teacher found — please fill in manually.'); }
+        warn.push(where+': HRT not free — '+nm(pick)+' assigned ('+why+').');
+    } else { warn.push(where+': no free supporting teacher found — please fill in manually.'); }
   });
   S.rows=rows;
   return {rows,warn,slots:[...new Set(seats)]};
 }
+
+/* Sessions run back-to-back from the start time through teaching periods,
+   pausing for recess/lunch. A session may straddle two consecutive lessons. */
+function buildSessions(startMin,len,count){
+  const per=BELL.map(b=>({key:b.key,label:b.label,s:mins(b.s),e:mins(b.e)}))
+    .filter(p=>p.s!=null&&p.e!=null&&p.e>p.s).sort((a,b)=>a.s-b.s);
+  const at=t=>per.find(p=>t>=p.s && t<p.e);
+  const next=t=>per.find(p=>p.s>t);
+  let cur=startMin; const out=[];
+  if(!at(cur)){ const n=next(cur-1); if(!n) return out; cur=n.s; }
+  let guard=0;
+  while(out.length<count && guard++<50){
+    let p=at(cur);
+    if(!p){ const n=next(cur); if(!n) break; cur=n.s; continue; }
+    const end=cur+len;
+    // is every minute from cur to end inside contiguous teaching periods?
+    let t=cur, ok=true;
+    while(t<end){
+      const q=at(t); if(!q){ ok=false; break; }
+      t=Math.min(end,q.e);
+      if(t<end && !per.some(x=>x.s===q.e)){ ok=false; break; }   // a break follows this lesson
+    }
+    if(!ok){ const n=next(cur); if(!n) break; cur=n.s; continue; }
+    const laps=per.filter(x=>x.s<end && x.e>cur)
+      .map(x=>({key:x.key,label:x.label,min:Math.min(end,x.e)-Math.max(cur,x.s)}));
+    out.push({s:cur,e:end,len,laps});
+    cur=end;
+  }
+  return out;
+}
 const nm=code=>code?(S.teachers[code]?code+' ('+S.teachers[code]+')':code):'';
 const subjLabel=k=>/^other \d/.test(k)? 'teaches this class' : k.trim()+' teacher';
+/* a session may cover two lessons; collapse them when the same teacher takes both */
+function mergeLegs(legs){
+  const out=[];
+  legs.forEach(l=>{
+    const p=out[out.length-1];
+    if(p && p.abbr===l.abbr){ p.labels.push(l.label); if(l.subject && !p.subjects.includes(l.subject)) p.subjects.push(l.subject); }
+    else out.push({abbr:l.abbr, labels:[l.label], subjects:l.subject?[l.subject]:[]});
+  });
+  return out.map(g=>({abbr:g.abbr, subject:g.subjects.join(' / '),
+    label:[...new Set(g.labels)].map(x=>String(x).replace('Lesson ','L')).join('–')}));
+}
 
 /* ============================ RENDER RESULT ============================ */
 $('btnGen').onclick=$('btnRe').onclick=()=>{
@@ -689,32 +746,40 @@ $('btnGen').onclick=$('btnRe').onclick=()=>{
     const {rows,warn}=buildPlan();
     const P=S.parsed;
     const allT=campusTeachers(P);
-    const freeList=l=>allT.filter(c=>freeAt(P,c,l));
+    const freeList=ses=>allT.filter(c=>ses.laps.every(l=>freeAt(P,c,l.key)));
     let h='<tr><th style="width:16%">Time</th><th style="width:8%">Class</th>'+
-      '<th style="width:30%">Subject Teacher<br><span class="muted">(Please bring ALL the students to the '+$('venue').value+')</span></th>'+
-      '<th style="width:30%">Supporting Teacher<br><span class="muted">(Please go to the '+$('venue').value+' to support your students.)</span></th>'+
+      '<th style="width:32%">Subject Teacher<br><span class="muted">(Please bring ALL the students to the '+$('venue').value+')</span></th>'+
+      '<th style="width:28%">Supporting Teacher<br><span class="muted">(Please go to the '+$('venue').value+' to support your students.)</span></th>'+
       '<th style="width:16%">Student (NO Immunization)</th></tr>';
     let prev=null;
     rows.forEach((r,i)=>{
-      const same=prev===r.lesson; prev=r.lesson;
+      const same=prev===r.key; prev=r.key;
+      const groups=mergeLegs(r.legs);
+      const legSel=groups.map((g,k)=>
+        '<div style="display:flex;gap:6px;align-items:center;'+(k?'margin-top:4px':'')+'">'+
+        (groups.length>1?'<span class="badge">'+g.label+'</span>':'')+
+        '<select class="t-sub" data-leg="'+k+'">'+
+        allT.map(c=>'<option value="'+c+'"'+(c===g.abbr?' selected':'')+'>'+nm(c)+'</option>').join('')+
+        '</select><span class="badge">'+(g.subject||'—')+'</span></div>').join('')
+        || '<select class="t-sub" data-leg="0"><option value="">—</option></select>';
       h+='<tr data-i="'+i+'">'+
-        '<td>'+(same?'<span class="muted">↑ same slot</span>':
-          '<input class="t-time" value="'+r.time+'"> <span class="badge">L'+r.lesson+'</span>')+'</td>'+
+        '<td>'+(same?'<span class="muted">↑ same session</span>':
+          '<input class="t-time" value="'+r.time+'"> <span class="badge">'+r.lessonLabel+'</span>')+'</td>'+
         '<td><b>'+r.cls+'</b></td>'+
-        '<td><select class="t-sub">'+allT.map(c=>'<option value="'+c+'"'+(c===r.teacher?' selected':'')+'>'+nm(c)+'</option>').join('')+
-          '</select> <span class="badge">'+(r.subject||'—')+'</span>'+
-          (r.hrtLeads?' <span class="badge">HRT brings class</span>':'')+'</td>'+
+        '<td>'+legSel+(r.hrtLeads?'<div><span class="badge">HRT brings class</span></div>':'')+
+          (r.crosses?'<div><span class="badge w">two teachers</span></div>':'')+'</td>'+
         '<td><select class="t-sup"><option value="">— none —</option>'+
-          freeList(r.lesson).map(c=>'<option value="'+c+'"'+(c===r.support?' selected':'')+'>'+nm(c)+'</option>').join('')+
+          freeList(r.ses).map(c=>'<option value="'+c+'"'+(c===r.support?' selected':'')+'>'+nm(c)+'</option>').join('')+
           '</select> '+(r.supportRole?'<span class="badge'+(/HRT/.test(r.supportRole)?'':' w')+'">'+r.supportRole+'</span>':'')+'</td>'+
         '<td><input class="t-no" value=""></td></tr>';
     });
     $('outTbl').innerHTML=h;
     $('warnings').innerHTML = warn.length
       ? '<div class="note"><b>Check these:</b><br>'+warn.join('<br>')+'</div>'
-      : '<div class="okbox">All good — every G2–G6 class goes down with its own HRT, and every G1 class has a supporting teacher. No PE / Music / V.A. lessons used.</div>';
+      : '<div class="okbox">All good — every G2–G6 class goes down with its own HRT, every G1 class has a supporting teacher, no session needs two teachers and no PE / Music / V.A. lessons were used.</div>';
     const first=rows[0], last=rows[rows.length-1];
-    $('resMeta').textContent='· '+S.campus+' · '+S.day+' · '+first.time.split(' – ')[0]+'–'+last.time.split(' – ')[1];
+    $('resMeta').textContent='· '+S.campus+' · '+S.day+' · '+hhmm(first.ses.s)+'–'+hhmm(last.ses.e)+
+      ' · '+$('sesLen').value+' min per session';
     if(!$('remarks').value.trim()) $('remarks').value=defaultRemarks();
     if(!$('title').value.trim()) $('title').value=defaultTitle();
     $('cRes').classList.remove('hide');
@@ -742,11 +807,14 @@ function collect(){
   $('outTbl').querySelectorAll('tr[data-i]').forEach(tr=>{
     const i=+tr.dataset.i, r=S.rows[i];
     const timeEl=tr.querySelector('.t-time');
+    const hrts=(rosterOf(r.cls)||{hrts:[]}).hrts;
+    const groups=mergeLegs(r.legs);
+    const legs=[...tr.querySelectorAll('.t-sub')].map((sel,k)=>({
+      code: sel.value, subject: (groups[k]||{}).subject||'', hrt: hrts.includes(sel.value)
+    })).filter(l=>l.code);
     out.push({
       time: timeEl? timeEl.value : null,           // null = merge with the row above
-      lesson: r.lesson, cls:r.cls,
-      sub: tr.querySelector('.t-sub').value, subject:r.subject,
-      hrtLeads: (rosterOf(r.cls)||{hrts:[]}).hrts.includes(tr.querySelector('.t-sub').value),
+      lessonLabel: r.lessonLabel, cls:r.cls, legs,
       sup: tr.querySelector('.t-sup').value,
       no : tr.querySelector('.t-no').value
     });
@@ -792,11 +860,11 @@ function buildDocXml(){
     cell('Student (NO Immunization)',{w:W[4],b:true,align:'center',shd:'DCE6F1'})+'</w:tr>';
   rows.forEach(r=>{
     const merge = r.time? 'restart' : 'cont';
-    const timeLines = r.time? [r.time,'(Lesson '+r.lesson+')'] : [''];
+    const timeLines = r.time? [r.time,'('+r.lessonLabel.replace(/\bL(\d)/g,'Lesson $1')+')'] : [''];
     tbl+='<w:tr>'+
       cell(timeLines,{w:W[0],align:'center',vm:merge})+
       cell(r.cls,{w:W[1],b:true,align:'center'})+
-      cell(nm(r.sub)+((r.subject && !r.hrtLeads)?' – '+r.subject:''),{w:W[2]})+
+      cell(r.legs.map(l=>nm(l.code)+((l.subject && !l.hrt)?' – '+l.subject:'')).join('  →  ')||'',{w:W[2]})+
       cell(nm(r.sup),{w:W[3]})+
       cell(r.no,{w:W[4]})+'</w:tr>';
   });
