@@ -106,6 +106,10 @@ details summary{cursor:pointer;font-size:13px;color:var(--accent);font-weight:60
     <div><label class="f">Start time of immunisation</label><input type="text" id="startT" value="10:20" placeholder="HH:MM"></div>
     <div><label class="f">Number of stations</label><input type="number" id="stations" value="2" min="1" max="6"></div>
     <div><label class="f">Finish each session early by (min)</label><input type="number" id="trim" value="5" min="0" max="15"></div>
+    <div><label class="f">Extra lessons to search</label><input type="number" id="window" value="2" min="0" max="4"
+      title="The app may look this many lessons further on to find slots where the HRT is teaching"></div>
+  </div>
+  <div class="grid" style="margin-top:14px">
     <div><label class="f">Title</label><input type="text" id="title" placeholder="auto"></div>
   </div>
   <details style="margin-top:14px">
@@ -119,7 +123,13 @@ details summary{cursor:pointer;font-size:13px;color:var(--accent);font-weight:60
   <h2><span class="step">3</span> Grades &amp; classes</h2>
   <label class="f">Grades</label>
   <div class="chips" id="grades"></div>
-  <label class="f" style="margin-top:14px">Classes (untick any that are not joining)</label>
+  <div class="row" style="margin-top:14px;justify-content:space-between">
+    <label class="f" style="margin:0">Classes (untick any that are not joining)</label>
+    <span class="row" style="gap:6px">
+      <button class="sec" id="btnAll" style="padding:4px 12px;font-size:12px">Select all</button>
+      <button class="sec" id="btnNone" style="padding:4px 12px;font-size:12px">Clear all</button>
+    </span>
+  </div>
   <div class="chips" id="classes"></div>
   <div class="row" style="margin-top:18px">
     <button id="btnGen">Generate arrangement</button>
@@ -254,9 +264,10 @@ function synthRoster(P){
   [...all].sort().forEach(cls=>{
     const hrts=(P.hrts[cls]||[]).slice();
     const freq=P.freq[cls]||{};
-    const subs={};
+    const subs={}, sj=(P.subjOf||{})[cls]||{};
     Object.keys(freq).filter(c=>!hrts.includes(c)).sort((a,b)=>freq[b]-freq[a])
-      .forEach((code,i)=>{ subs['teacher of '+cls+' #'+(i+1)]=code; });
+      .forEach((code,i)=>{ let k=sj[code]||('other '+(i+1));
+        while(subs[k]) k=k+' '; subs[k]=code; });
     S.roster.push({campus:'All classes', cls, hrts, subs});
   });
 }
@@ -373,6 +384,9 @@ function parseTeacherWorkbook(){
         O.classes[cls]=O.classes[cls]||{};
         O.classes[cls][key]={subject:subject.replace(/\s*\(.*?\)\s*/g,'').trim(), abbr:code};
         O.freq[cls]=O.freq[cls]||{}; O.freq[cls][code]=(O.freq[cls][code]||0)+1;
+        const sj=(O.classes[cls][key].subject||'').trim();
+        if(sj){ O.subjOf=O.subjOf||{}; O.subjOf[cls]=O.subjOf[cls]||{};
+                O.subjOf[cls][code]=O.subjOf[cls][code]||sj; }
       });
     });
     sheets++;
@@ -510,6 +524,8 @@ function renderClasses(){
   capacity();
 }
 function selectedClasses(){ return [...$('classes').children].filter(e=>e.classList.contains('on')).map(e=>e.dataset.c); }
+$('btnAll').onclick=()=>{ [...$('classes').children].forEach(e=>{ if(e.dataset.c) e.classList.add('on'); }); capacity(); };
+$('btnNone').onclick=()=>{ [...$('classes').children].forEach(e=>e.classList.remove('on')); capacity(); };
 function capacity(){
   const n=selectedClasses().length, st=+$('stations').value||2;
   $('capacity').textContent = n? n+' classes ÷ '+st+' stations = '+Math.ceil(n/st)+' lesson slots needed.' : '';
@@ -536,39 +552,64 @@ function buildPlan(){
   if(idx<0) idx=BELL.findIndex(b=>mins(b.e)>st);
   if(idx<0) idx=3;
   const need=Math.ceil(classes.length/stations);
-  const slots=[];
-  for(let i=idx;i<BELL.length && slots.length<need;i++){
+  const extra=Math.max(0,+$('window').value||0);
+  const avail=[];
+  for(let i=idx;i<BELL.length && avail.length<need+extra;i++){
     const b=BELL[i];
     const anyLesson=classes.some(c=>P.classes[c] && P.classes[c][b.key] && (P.classes[c][b.key].abbr||P.classes[c][b.key].subject));
-    if(anyLesson) slots.push(b);
+    if(anyLesson) avail.push(b);
   }
-  if(slots.length<need) throw new Error('Not enough lessons left in the day: need '+need+' slots but only '+slots.length+' available after '+$('startT').value+'.');
+  if(avail.length<need) throw new Error('Not enough lessons left in the day: need '+need+' slots but only '+avail.length+' available after '+$('startT').value+'.');
 
-  // cost of putting a class in a slot
+  /* --- cost of putting a class in a slot ------------------------------------
+     G1  : needs a supporting teacher — prefer a slot where an HRT is free.
+     G2-6: the class's own HRT should be teaching it, so the HRT brings them down.
+     PE / Music / V.A. are avoided unless the teacher is that class's HRT.       */
+  const isSpecial=s=>/^(p\.?e\.?|music|v\.?a\.?|visual art)$/i.test((s||'').trim());
   const cost=(cls,b)=>{
     const cell=(P.classes[cls]||{})[b.key]||{};
-    let c=0;
-    if(!cell.abbr) c+=40;                                    // nobody timetabled
-    if(/^p\.?e\.?$/i.test(cell.subject||'')) c+=12;          // avoid PE
-    if(/study hall/i.test(cell.subject||'')) c+=4;
     const rs=rosterOf(cls);
-    const hrFree=rs? rs.hrts.some(h=>freeAt(P,h,b.key) && h!==cell.abbr) : false;
-    const hrTeaching=rs? rs.hrts.includes(cell.abbr) : false;
-    if(!hrFree && !hrTeaching) c+=6;                          // no familiar face available
+    const hrtTeaching = rs? rs.hrts.includes(cell.abbr) : false;
+    let c=0;
+    if(!cell.abbr) c+=60;                                        // nobody timetabled
+    if(isSpecial(cell.subject) && !hrtTeaching) c+=45;           // PE / Music / VA — last resort
+    if(/study hall|reading|assembly/i.test(cell.subject||'')) c+=8;
+    if(cls[0]==='1'){                                            // G1: supporting teacher wanted
+      const hrFree = rs? rs.hrts.some(h=>h!==cell.abbr && freeAt(P,h,b.key)) : false;
+      const ownFree= rs? Object.values(rs.subs).some(t=>t!==cell.abbr && freeAt(P,t,b.key)) : false;
+      if(!hrFree) c+= ownFree? 10 : 25;
+    } else {                                                     // G2-G6: HRT should bring them
+      if(!hrtTeaching) c+=30;
+    }
     return c;
   };
-  // greedy then local swap improvement
-  const seats=[]; slots.forEach(b=>{ for(let k=0;k<stations && seats.length<classes.length;k++) seats.push(b); });
-  let order=classes.slice();
-  const total=o=>o.reduce((s,c,i)=>s+cost(c,seats[i]),0);
-  let best=order.slice(), bestC=total(best), improved=true, guard=0;
-  while(improved && guard++<200){
-    improved=false;
-    for(let i=0;i<best.length;i++) for(let j=i+1;j<best.length;j++){
-      const t=best.slice(); [t[i],t[j]]=[t[j],t[i]];
-      const c=total(t); if(c<bestC-0.0001){best=t;bestC=c;improved=true;}
+  /* choose which lessons to use (combinations within the window), then who goes where */
+  const combos=[];
+  (function pick(start,acc){
+    if(acc.length===need){ combos.push(acc.slice()); return; }
+    if(combos.length>200) return;
+    for(let i=start;i<avail.length;i++){ acc.push(avail[i]); pick(i+1,acc); acc.pop(); }
+  })(0,[]);
+  const orderCost=(seats,order)=>order.reduce((s,c,i)=>s+cost(c,seats[i]),0);
+  let best=null,bestSeats=null,bestC=Infinity;
+  combos.forEach(combo=>{
+    const seats=[]; combo.forEach(b=>{ for(let k=0;k<stations && seats.length<classes.length;k++) seats.push(b); });
+    let ord=classes.slice(), c0=orderCost(seats,ord), improved=true, guard=0;
+    while(improved && guard++<200){
+      improved=false;
+      for(let i=0;i<ord.length;i++) for(let j=i+1;j<ord.length;j++){
+        const t=ord.slice(); [t[i],t[j]]=[t[j],t[i]];
+        const c=orderCost(seats,t); if(c<c0-1e-6){ord=t;c0=c;improved=true;}
+      }
     }
-  }
+    const spread=(BELL.indexOf(combo[combo.length-1])-BELL.indexOf(combo[0])-(need-1))*6;  // prefer back-to-back
+    const late=(BELL.indexOf(combo[0])-idx)*8;                                             // stay near the start time
+    let brk=0;                                                                             // avoid running over a long break
+    for(let i=1;i<combo.length;i++) if(mins(combo[i].s)-mins(combo[i-1].e)>20) brk+=25;
+    const tot=c0+spread+late+brk;
+    if(tot<bestC){bestC=tot;best=ord;bestSeats=seats;}
+  });
+  const seats=bestSeats;
   // build rows
   const trim=Math.max(0,+$('trim').value||0);
   const usedInSlot={}, usedDay=new Set(), rows=[], warn=[];
@@ -580,8 +621,25 @@ function buildPlan(){
                teacher:cell.abbr||'', support:'', time:b.s+' – '+hhmm(Math.max(mins(b.s),mins(b.e)-trim))});
   });
   rows.sort((a,b)=>BELL.indexOf(a.slot)-BELL.indexOf(b.slot) || a.cls.localeCompare(b.cls));
+  { const used=[...new Set(seats)].map(b=>BELL.indexOf(b)).sort((a,b)=>a-b);
+    const gaps=[]; for(let i=1;i<used.length;i++)
+      for(let k=used[i-1]+1;k<used[i];k++) gaps.push(BELL[k].label);
+    if(gaps.length) warn.push('Slots are not back-to-back — '+gaps.join(', ')+
+      ' skipped to find lessons taught by the HRTs. Set "Extra lessons to search" to 0 to force consecutive lessons.');
+  }
   rows.forEach(r=>{
     const rs=rosterOf(r.cls), L=r.lesson, used=usedInSlot[L];
+    r.hrtLeads = !!(rs && rs.hrts.includes(r.teacher));
+    if(!r.teacher) warn.push(r.cls+' (L'+L+'): no lesson timetabled — subject teacher left blank.');
+    if(isSpecial(r.subject) && !r.hrtLeads)
+      warn.push(r.cls+' (L'+L+'): '+r.subject+' lesson — no other slot was free.');
+
+    if(r.cls[0]!=='1'){                       // G2–G6: the HRT brings them, no supporting teacher
+      if(!r.hrtLeads) warn.push(r.cls+' (L'+L+'): the HRT is not teaching this slot ('+
+        nm(r.teacher)+' brings the class) — add a supporting teacher below if you want one.');
+      return;
+    }
+    // G1 only: find a supporting teacher, HRT first
     const cand=[];
     if(rs){
       rs.hrts.forEach(h=>cand.push([h,'HRT']));
@@ -589,7 +647,7 @@ function buildPlan(){
         const ia=SUBJ_COLS.indexOf(a), ib=SUBJ_COLS.indexOf(b);
         return (ia<0?99:ia)-(ib<0?99:ib);
       });
-      keys.forEach(k=>{ if(rs.subs[k]) cand.push([rs.subs[k], SUBJ_COLS.includes(k)? k+' teacher':'own teacher']); });
+      keys.forEach(k=>{ if(rs.subs[k]) cand.push([rs.subs[k], subjLabel(k)]); });
     }
     let pick=null,why='';
     for(const [code,role] of cand){
@@ -614,19 +672,16 @@ function buildPlan(){
         pick=code; why='free teacher'; break;
       }
     }
-    const hrtIsSubject = rs && rs.hrts.includes(r.teacher);
-    if(hrtIsSubject) r.hrtLeads=true;
     if(pick){ used.add(pick); usedDay.add(pick); r.support=pick; r.supportRole=why;
-      if(!/HRT/.test(why) && !hrtIsSubject)
+      if(!/HRT/.test(why) && !r.hrtLeads)
         warn.push(r.cls+' (L'+L+'): HRT not free — '+nm(pick)+' assigned ('+why+').');
     } else { warn.push(r.cls+' (L'+L+'): no free supporting teacher found — please fill in manually.'); }
-    if(!r.teacher) warn.push(r.cls+' (L'+L+'): no lesson timetabled — subject teacher left blank.');
-    if(/^p\.?e\.?$/i.test(r.subject)) warn.push(r.cls+' (L'+L+'): this is a PE lesson.');
   });
   S.rows=rows;
-  return {rows,warn,slots};
+  return {rows,warn,slots:[...new Set(seats)]};
 }
 const nm=code=>code?(S.teachers[code]?code+' ('+S.teachers[code]+')':code):'';
+const subjLabel=k=>/^other \d/.test(k)? 'teaches this class' : k.trim()+' teacher';
 
 /* ============================ RENDER RESULT ============================ */
 $('btnGen').onclick=$('btnRe').onclick=()=>{
@@ -657,7 +712,7 @@ $('btnGen').onclick=$('btnRe').onclick=()=>{
     $('outTbl').innerHTML=h;
     $('warnings').innerHTML = warn.length
       ? '<div class="note"><b>Check these:</b><br>'+warn.join('<br>')+'</div>'
-      : '<div class="okbox">All classes matched with a free HRT — no clashes.</div>';
+      : '<div class="okbox">All good — every G2–G6 class goes down with its own HRT, and every G1 class has a supporting teacher. No PE / Music / V.A. lessons used.</div>';
     const first=rows[0], last=rows[rows.length-1];
     $('resMeta').textContent='· '+S.campus+' · '+S.day+' · '+first.time.split(' – ')[0]+'–'+last.time.split(' – ')[1];
     if(!$('remarks').value.trim()) $('remarks').value=defaultRemarks();
@@ -666,13 +721,14 @@ $('btnGen').onclick=$('btnRe').onclick=()=>{
     $('cRes').scrollIntoView({behavior:'smooth'});
   }catch(e){ alert(e.message); }
 };
+const listJoin=a=>a.length<2? (a[0]||'') : a.slice(0,-1).join(', ')+' & '+a[a.length-1];
 function defaultTitle(){
-  const gs=[...new Set(selectedClasses().map(c=>c[0]))].sort();
-  return 'Arrangement of '+gs.map(g=>'G'+g).join(' & ')+' Immunization ('+S.campus+')';
+  const gs=[...new Set(selectedClasses().map(c=>c[0]))].sort().map(g=>'G'+g);
+  return 'Arrangement of '+listJoin(gs)+' Immunization ('+S.campus+')';
 }
 function defaultRemarks(){
   const v=$('venue').value, st=+$('stations').value||2;
-  const gs=[...new Set(selectedClasses().map(c=>c[0]))].sort().map(g=>'G'+g).join(' and ');
+  const gs=listJoin([...new Set(selectedClasses().map(c=>c[0]))].sort().map(g=>'G'+g));
   return gs+' Immunisation will take place at the '+v+'.\n'+
     'There will be '+st+' stations.\n'+
     'Normal recess on that day.\n'+
@@ -690,6 +746,7 @@ function collect(){
       time: timeEl? timeEl.value : null,           // null = merge with the row above
       lesson: r.lesson, cls:r.cls,
       sub: tr.querySelector('.t-sub').value, subject:r.subject,
+      hrtLeads: (rosterOf(r.cls)||{hrts:[]}).hrts.includes(tr.querySelector('.t-sub').value),
       sup: tr.querySelector('.t-sup').value,
       no : tr.querySelector('.t-no').value
     });
@@ -739,7 +796,7 @@ function buildDocXml(){
     tbl+='<w:tr>'+
       cell(timeLines,{w:W[0],align:'center',vm:merge})+
       cell(r.cls,{w:W[1],b:true,align:'center'})+
-      cell(nm(r.sub)+(r.subject?' – '+r.subject:''),{w:W[2]})+
+      cell(nm(r.sub)+((r.subject && !r.hrtLeads)?' – '+r.subject:''),{w:W[2]})+
       cell(nm(r.sup),{w:W[3]})+
       cell(r.no,{w:W[4]})+'</w:tr>';
   });
