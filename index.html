@@ -112,6 +112,12 @@ details summary{cursor:pointer;font-size:13px;color:var(--accent);font-weight:60
     <div><label class="f">Extra slots to search</label><input type="number" id="window" value="2" min="0" max="4"
       title="The app may look this many sessions further on to find slots where the HRT is teaching"></div>
   </div>
+  <div class="row" style="margin-top:14px">
+    <label style="display:flex;gap:8px;align-items:center;font-size:13px;cursor:pointer">
+      <input type="checkbox" id="useBreak" style="width:auto">
+      Sessions may run through <b>recess / lunch</b> (keep them back-to-back instead of waiting for the next lesson)
+    </label>
+  </div>
   <div class="grid" style="margin-top:14px">
     <div><label class="f">Title</label><input type="text" id="title" placeholder="auto"></div>
   </div>
@@ -536,6 +542,7 @@ function capacity(){
 }
 $('stations').oninput=capacity;
 $('sesLen').onchange=capacity;
+$('useBreak').onchange=capacity;
 
 function buildBellTable(){
   $('bellTbl').innerHTML='<tr><th>Lesson</th>'+BELL.map(b=>'<th>'+b.label.replace('Lesson ','L')+'</th>').join('')+'</tr>'+
@@ -617,7 +624,8 @@ function buildPlan(){
     const spread=(last-first-(need-1))*6;                      // prefer back-to-back sessions
     const late=first*8;                                        // stay near the start time
     let brk=0;
-    for(let i=1;i<combo.length;i++) if(combo[i].s-combo[i-1].e>20) brk+=25;   // avoid running over a break
+    if(!($('useBreak')||{}).checked)
+      for(let i=1;i<combo.length;i++) if(combo[i].s-combo[i-1].e>20) brk+=25;  // avoid running over a break
     const tot=c0+spread+late+brk;
     if(tot<bestC){bestC=tot;best=ord;bestSeats=seats;}
   });
@@ -645,7 +653,9 @@ function buildPlan(){
     const codes=[...new Set(r.legs.map(l=>l.abbr).filter(Boolean))];
     r.hrtLeads = !!(rs && codes.length>0 && codes.every(c=>rs.hrts.includes(c)));
     r.crosses  = codes.length>1;
-    if(!codes.length) warn.push(where+': no lesson timetabled — subject teacher left blank.');
+    if(!codes.length) warn.push(where+': '+(r.legs.length? 'no lesson timetabled'
+      : 'this session falls in recess / lunch, so no teacher is timetabled')+
+      ' — subject teacher left blank.');
     r.legs.forEach(l=>{ if(isSpecial(l.subject) && !(rs&&rs.hrts.includes(l.abbr)))
       warn.push(where+': '+l.subject+' lesson ('+l.label+') — no better slot was free.'); });
     if(r.crosses) warn.push(where+': the session runs across '+r.lessonLabel+
@@ -697,20 +707,31 @@ function buildPlan(){
   return {rows,warn,slots:[...new Set(seats)]};
 }
 
-/* Sessions run back-to-back from the start time through teaching periods,
-   pausing for recess/lunch. A session may straddle two consecutive lessons. */
+/* Sessions run back-to-back from the start time. By default they pause for recess/lunch
+   (a session that would run into a break starts at the next lesson instead); tick
+   "run through recess / lunch" to keep them strictly back-to-back on the clock.
+   A session may straddle two consecutive lessons. */
 function buildSessions(startMin,len,count){
+  const allowBreak = !!($('useBreak')||{}).checked;
   const per=BELL.map(b=>({key:b.key,label:b.label,s:mins(b.s),e:mins(b.e)}))
     .filter(p=>p.s!=null&&p.e!=null&&p.e>p.s).sort((a,b)=>a.s-b.s);
+  if(!per.length) return [];
+  const dayEnd=per[per.length-1].e;
   const at=t=>per.find(p=>t>=p.s && t<p.e);
   const next=t=>per.find(p=>p.s>t);
+  const lapsFor=(a,b)=>per.filter(x=>x.s<b && x.e>a)
+    .map(x=>({key:x.key,label:x.label,min:Math.min(b,x.e)-Math.max(a,x.s)}));
   let cur=startMin; const out=[];
-  if(!at(cur)){ const n=next(cur-1); if(!n) return out; cur=n.s; }
+  if(!at(cur) && !allowBreak){ const n=next(cur-1); if(!n) return out; cur=n.s; }
   let guard=0;
-  while(out.length<count && guard++<50){
-    let p=at(cur);
-    if(!p){ const n=next(cur); if(!n) break; cur=n.s; continue; }
+  while(out.length<count && guard++<60){
     const end=cur+len;
+    if(end>dayEnd) break;
+    if(allowBreak){                       // straight through recess / lunch
+      out.push({s:cur,e:end,len,laps:lapsFor(cur,end)});
+      cur=end; continue;
+    }
+    if(!at(cur)){ const n=next(cur); if(!n) break; cur=n.s; continue; }
     // is every minute from cur to end inside contiguous teaching periods?
     let t=cur, ok=true;
     while(t<end){
@@ -719,9 +740,7 @@ function buildSessions(startMin,len,count){
       if(t<end && !per.some(x=>x.s===q.e)){ ok=false; break; }   // a break follows this lesson
     }
     if(!ok){ const n=next(cur); if(!n) break; cur=n.s; continue; }
-    const laps=per.filter(x=>x.s<end && x.e>cur)
-      .map(x=>({key:x.key,label:x.label,min:Math.min(end,x.e)-Math.max(cur,x.s)}));
-    out.push({s:cur,e:end,len,laps});
+    out.push({s:cur,e:end,len,laps:lapsFor(cur,end)});
     cur=end;
   }
   return out;
@@ -796,7 +815,9 @@ function defaultRemarks(){
   const gs=listJoin([...new Set(selectedClasses().map(c=>c[0]))].sort().map(g=>'G'+g));
   return gs+' Immunisation will take place at the '+v+'.\n'+
     'There will be '+st+' stations.\n'+
-    'Normal recess on that day.\n'+
+    ($('useBreak').checked
+      ? 'Some sessions run through recess — those classes will take their recess after the injection.'
+      : 'Normal recess on that day.')+'\n'+
     'Please arrive at the '+v+' on time.\n'+
     'Students should line up according to their class number. For the ones not getting the shot, please line up at the end of the line.';
 }
