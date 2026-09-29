@@ -110,7 +110,7 @@ details summary{cursor:pointer;font-size:13px;color:var(--accent);font-weight:60
       <option value="20" selected>20 minutes</option><option value="25">25 minutes</option>
       <option value="30">30 minutes</option></select></div>
     <div><label class="f">Extra slots to search</label><input type="number" id="window" value="2" min="0" max="4"
-      title="The app may look this many sessions further on to find slots where the HRT is teaching"></div>
+      title="How many later sessions the app may skip to find slots where the HRT is teaching. The FIRST session always starts at the time you typed; set this to 0 to keep every session back-to-back."></div>
   </div>
   <div class="row" style="margin-top:14px">
     <label style="display:flex;gap:8px;align-items:center;font-size:13px;cursor:pointer">
@@ -617,10 +617,12 @@ function buildPlan(){
   /* Try the typed start time first; if a class would have to be split between two
      teachers, nudge the whole schedule a few minutes later until it doesn't. */
   const shifts=[0,5,10,15,20,25,30,-5,-10];
-  let best=null,bestSeats=null,bestC=Infinity,bestShift=0,bestSplit=true,tried=0;
+  let best=null,bestSeats=null,bestC=Infinity,bestShift=0,bestSplit=true,bestStart=null,tried=0;
   const attempts=[];
-  [extra,extra+3,extra+6].forEach(w=>shifts.forEach(sh=>attempts.push([sh,w])));
-  for(const [sh,win] of attempts){
+  /* forceFirst: the first session always starts at the time you typed. Only if that
+     leaves a class split between two teachers do we allow a later start.          */
+  [true,false].forEach(ff=>[extra,extra+3,extra+6].forEach(w=>shifts.forEach(sh=>attempts.push([sh,w,ff]))));
+  for(const [sh,win,forceFirst] of attempts){
     const avail=buildSessions(st+sh,len,need+win);
     if(avail.length<need) continue;
     tried++;
@@ -629,7 +631,7 @@ function buildPlan(){
       if(acc.length===need){ combos.push(acc.slice()); return; }
       if(combos.length>200) return;
       for(let i=start;i<avail.length;i++){ acc.push(avail[i]); pick(i+1,acc); acc.pop(); }
-    })(0,[]);
+    })(forceFirst?1:0, forceFirst?[avail[0]]:[]);
     combos.forEach(combo=>{
       const seats=[]; combo.forEach(b=>{ for(let k=0;k<stations && seats.length<classes.length;k++) seats.push(b); });
       // exact min-cost matching of classes to seats
@@ -646,7 +648,8 @@ function buildPlan(){
         for(let i=1;i<combo.length;i++) if(combo[i].s-combo[i-1].e>20) brk+=10;  // running over a break
       const spread=idle;
       const tot=c0+spread+late+brk;
-      if(tot<bestC){bestC=tot;best=ord.filter(Boolean);bestSeats=seats.filter((s,j)=>ord[j]);bestShift=sh;bestSplit=split;}
+      if(tot<bestC){bestC=tot;best=ord.filter(Boolean);bestSeats=seats.filter((s,j)=>ord[j]);
+        bestShift=sh;bestSplit=split;bestStart=combo[0].s;}
     });
     if(bestC<BLOCK) break;             // found a schedule with no split classes — stop nudging
   }
@@ -655,8 +658,9 @@ function buildPlan(){
   const seats=bestSeats;
   // build rows
   const usedInSes={}, usedDay=new Set(), rows=[], warn=[];
-  if(bestShift) warn.push('Start time moved to '+hhmm(st+bestShift)+' ('+(bestShift>0?'+':'')+bestShift+
-    ' min) so that no class has to be split between two teachers at a lesson change.');
+  if(bestStart!=null && bestStart!==st) warn.push('The first session starts at '+hhmm(bestStart)+
+    ' instead of '+hhmm(st)+' — at '+hhmm(st)+' a class would have been split between two teachers '+
+    'at a lesson change.');
   if(bestSplit) warn.push('Some sessions end inside the next lesson (see below). Only the teacher who '+
     'brings the class is named — try a different session length or start time if you want every session '+
     'to sit inside one lesson.');
@@ -678,9 +682,23 @@ function buildPlan(){
   });
   rows.sort((a,b)=>a.ses.s-b.ses.s || a.cls.localeCompare(b.cls));
   { const used=[...new Set(seats)].sort((a,b)=>a.s-b.s);
-    for(let i=1;i<used.length;i++) if(used[i].s>used[i-1].e)
-      warn.push('Gap in the schedule: nothing booked between '+hhmm(used[i-1].e)+' and '+hhmm(used[i].s)+
-        ' (used to find lessons taught by the HRTs). Set "Extra slots to search" to 0 to keep sessions back-to-back.');
+    const per=BELL.map(b=>({s:mins(b.s),e:mins(b.e)})).filter(p=>p.s!=null&&p.e!=null&&p.e>p.s)
+      .sort((a,b)=>a.s-b.s);
+    const breaks=[]; for(let i=0;i<per.length-1;i++) if(per[i+1].s>per[i].e)
+      breaks.push({a:per[i].e,b:per[i+1].s});
+    for(let i=1;i<used.length;i++) if(used[i].s>used[i-1].e){
+      const a=used[i-1].e, b=used[i].s;
+      const br=breaks.find(x=>x.a<b && x.b>a);                       // a break inside this gap
+      const inBreak=br? Math.min(b,br.b)-Math.max(a,br.a) : 0;
+      const teaching=(b-a)-inBreak;                                  // usable lesson time wasted
+      warn.push(teaching<len && br
+        ? (br.b-br.a>=30?'Lunch':'Recess')+' '+hhmm(br.a)+'–'+hhmm(br.b)+': nothing booked between '+
+          hhmm(a)+' and '+hhmm(b)+' because a '+len+'-minute session does not fit before the break. '+
+          'Tick "Sessions may run through recess / lunch" to keep them continuous.'
+        : 'Gap in the schedule: nothing booked between '+hhmm(a)+' and '+hhmm(b)+
+          ' — a session was skipped to find lessons taught by the HRTs. Set "Extra slots to search" to 0 '+
+          'to keep sessions back-to-back.');
+    }
   }
   rows.forEach(r=>{
     const rs=rosterOf(r.cls), used=usedInSes[r.key], where=r.cls+' ('+r.time+')';
